@@ -25,7 +25,7 @@ export async function chat(req: ChatRequest): Promise<ChatResponse> {
     baseURL: req.config.baseURL,
     apiKey: req.config.apiKey,
     defaultHeaders: {
-      "HTTP-Referer": "https://github.com/evlampy",
+      "HTTP-Referer": "https://github.com/SBOne-Kenobi/evlampy",
       "X-Title": "Evlampy",
     },
   });
