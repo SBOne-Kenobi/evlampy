@@ -1,0 +1,230 @@
+:root {
+  --gap: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.msg {
+  padding: 8px 10px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.45;
+}
+
+.msg.user {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  white-space: pre-wrap;
+}
+
+.msg.assistant {
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.msg.system {
+  background: transparent;
+  opacity: 0.85;
+  font-size: 0.92em;
+  padding: 2px 10px;
+}
+
+.msg.assistant pre,
+.msg.system pre {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.msg code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-textCodeBlock-background);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.msg pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.msg p:first-child {
+  margin-top: 0;
+}
+.msg p:last-child {
+  margin-bottom: 0;
+}
+
+#attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 var(--gap);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 10px;
+  padding: 2px 6px 2px 8px;
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chipx {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.1em;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+#suggestions {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0 var(--gap);
+  border: 1px solid var(--vscode-panel-border, #444);
+  background: var(--vscode-dropdown-background);
+  border-radius: 4px;
+}
+
+#suggestions.hidden,
+#diffbar.hidden {
+  display: none;
+}
+
+.sugg {
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.9em;
+}
+
+.sugg.active,
+.sugg:hover {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+#composer {
+  border-top: 1px solid var(--vscode-panel-border, #333);
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#input {
+  width: 100%;
+  resize: vertical;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, #555);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+#controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#model {
+  flex: 0 1 auto;
+  max-width: 45%;
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border, #555);
+  border-radius: 4px;
+  padding: 3px;
+}
+
+.cost {
+  flex: 1 1 auto;
+  font-size: 0.8em;
+  opacity: 0.75;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#diffbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#diffsummary {
+  flex: 1 1 auto;
+  font-size: 0.85em;
+}
+
+button.accept {
+  background: var(--vscode-button-background);
+}
+
+button.reject {
+  background: var(--vscode-button-secondaryBackground, #5a5a5a);
+  color: var(--vscode-button-secondaryForeground, #fff);
+}
