@@ -61,6 +61,57 @@ function check(name: string, cond: boolean, extra?: unknown) {
   }
 }
 
+// ---- parser: 3-backtick edit wrapper with inner ``` (the qwen case) ----
+{
+  const resp = [
+    "Updating the docs:",
+    "```evlampy:edit docs/x.md", // only 3 backticks
+    "<<<<<<< SEARCH",
+    "Example:",
+    "```bash",
+    "old --flag",
+    "```",
+    "=======",
+    "Example:",
+    "```bash",
+    "new --flag",
+    "```",
+    ">>>>>>> REPLACE",
+    "```",
+    "Done.",
+  ].join("\n");
+  const ops = parseDiffOps(resp);
+  check("3-tick edit with inner fences: one op", ops.length === 1, ops);
+  if (ops[0]?.kind === "edit") {
+    check("inner ``` kept in search", ops[0].hunks[0].search === "Example:\n```bash\nold --flag\n```", JSON.stringify(ops[0].hunks[0].search));
+    check("inner ``` kept in replace", ops[0].hunks[0].replace === "Example:\n```bash\nnew --flag\n```", JSON.stringify(ops[0].hunks[0].replace));
+  }
+}
+
+// ---- parser: two hunks, 3-backtick wrapper, inner fences in first ----
+{
+  const resp = [
+    "```evlampy:edit a.md",
+    "<<<<<<< SEARCH",
+    "```",
+    "a",
+    "```",
+    "=======",
+    "```",
+    "A",
+    "```",
+    ">>>>>>> REPLACE",
+    "<<<<<<< SEARCH",
+    "plain b",
+    "=======",
+    "plain B",
+    ">>>>>>> REPLACE",
+    "```",
+  ].join("\n");
+  const ops = parseDiffOps(resp);
+  check("two hunks despite inner fences", ops[0]?.kind === "edit" && ops[0].hunks.length === 2, ops);
+}
+
 // ---- parser: new + rewrite + delete ----
 {
   const resp = [

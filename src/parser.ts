@@ -18,25 +18,94 @@ export function parseDiffOps(text: string): DiffOp[] {
       i++;
       continue;
     }
-    // Collect body until a closing fence of the same backtick length.
+    i++; // move past the opening fence
+
+    if (open.kind === "edit") {
+      // Structure-aware: a ``` line only ends the block when we're BETWEEN
+      // hunks, so backticks inside SEARCH/REPLACE bodies are treated as content
+      // regardless of how many backticks the model used to open the block.
+      const { hunks, next } = parseEditBody(lines, i, open.ticks);
+      if (hunks.length) {
+        ops.push({ kind: "edit", path: open.path, hunks });
+      }
+      i = next;
+      continue;
+    }
+
+    // new / rewrite / delete: opaque body, closed by a fence of >= open length.
     const bodyLines: string[] = [];
-    let j = i + 1;
     let closed = false;
-    while (j < lines.length) {
-      if (isCloseFence(lines[j], open.ticks)) {
+    while (i < lines.length) {
+      if (isCloseFence(lines[i], open.ticks)) {
         closed = true;
         break;
       }
-      bodyLines.push(lines[j]);
-      j++;
+      bodyLines.push(lines[i]);
+      i++;
     }
     const op = toOp(open.kind, open.path, bodyLines.join("\n"));
     if (op) {
       ops.push(op);
     }
-    i = closed ? j + 1 : j;
+    if (closed) {
+      i++;
+    }
   }
   return ops;
+}
+
+/**
+ * Parse the body of an `evlampy:edit` block as a sequence of SEARCH/REPLACE
+ * hunks. Fence lines are honored only while between hunks; inside a SEARCH or
+ * REPLACE body they are literal content. Returns the hunks and the line index
+ * just past the closing fence (or EOF).
+ */
+function parseEditBody(
+  lines: string[],
+  start: number,
+  openTicks: string
+): { hunks: Hunk[]; next: number } {
+  const hunks: Hunk[] = [];
+  let mode: "between" | "search" | "replace" = "between";
+  let search: string[] = [];
+  let replace: string[] = [];
+  let i = start;
+
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (mode === "between") {
+      if (isCloseFence(line, openTicks)) {
+        i++; // consume the closing fence
+        break;
+      }
+      if (SEARCH_RE.test(line)) {
+        mode = "search";
+        search = [];
+      }
+      // Other lines between hunks (blank/stray) are ignored.
+    } else if (mode === "search") {
+      if (SEP_RE.test(line)) {
+        mode = "replace";
+        replace = [];
+      } else {
+        search.push(line);
+      }
+    } else {
+      // replace
+      if (REPLACE_RE.test(line)) {
+        hunks.push({ search: search.join("\n"), replace: replace.join("\n") });
+        mode = "between";
+      } else {
+        replace.push(line);
+      }
+    }
+  }
+
+  // Tolerate a final hunk whose closing >>>>>>> REPLACE was omitted.
+  if (mode === "replace") {
+    hunks.push({ search: search.join("\n"), replace: replace.join("\n") });
+  }
+  return { hunks, next: i };
 }
 
 interface OpenFence {
@@ -63,10 +132,6 @@ function isCloseFence(line: string, openTicks: string): boolean {
 
 function toOp(kind: string, path: string, body: string): DiffOp | undefined {
   switch (kind) {
-    case "edit": {
-      const hunks = parseHunks(body);
-      return hunks.length ? { kind: "edit", path, hunks } : undefined;
-    }
     case "new":
       return { kind: "new", path, content: stripTrailingNewline(body) };
     case "rewrite":
