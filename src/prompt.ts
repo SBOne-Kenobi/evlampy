@@ -4,7 +4,15 @@ import { Attachment } from "./types";
  * The ONLY system prompt Evlampy injects on its own. It exists solely to teach
  * the model the diff format the shell can apply. No personality, no agent rules.
  */
-export const DEFAULT_SYSTEM_PROMPT = `To change files, emit fenced code blocks whose info string begins with "evlampy:".
+export const DEFAULT_SYSTEM_PROMPT = `You're coding assistant. 
+
+# Output Format
+
+Your output is a markdown with suggested file changes that are injected.
+
+## File change format
+
+Fenced code blocks whose info string begins with "evlampy:".
 Only those blocks are applied to the files; all other text is shown to the user as-is.
 
 EDIT an existing file (preferred — cheapest):

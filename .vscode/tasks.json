@@ -2,18 +2,20 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "build",
+      "label": "build",
+      "type": "process",
+      "command": "node",
+      "args": ["esbuild.js"],
       "problemMatcher": ["$esbuild"],
-      "label": "npm: build",
       "group": "build"
     },
     {
-      "type": "npm",
-      "script": "watch",
-      "problemMatcher": ["$esbuild"],
+      "label": "watch",
+      "type": "process",
+      "command": "node",
+      "args": ["esbuild.js", "--watch"],
       "isBackground": true,
-      "label": "npm: watch",
+      "problemMatcher": ["$esbuild"],
       "group": "build"
     }
   ]
