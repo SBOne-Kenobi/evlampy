@@ -65,6 +65,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.runChat(m.text, m.attachments, m.model);
       case "requestFileSuggestions":
         return this.sendFileSuggestions(m.query);
+      case "attachByPath":
+        return this.attachByPath(m.path);
       case "openConfig":
         return void vscode.commands.executeCommand("evlampy.openConfig");
       case "removeAttachment":
@@ -244,6 +246,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       HISTORY_KEY,
       list.slice(0, HISTORY_LIMIT)
     );
+  }
+
+  /** Read a workspace file picked via @ and add it to the chat as an attachment. */
+  private async attachByPath(rel: string): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+    const abs = path.isAbsolute(rel) ? rel : path.join(root, rel);
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(abs));
+      const content = Buffer.from(bytes).toString("utf8");
+      this.post({ type: "addAttachment", attachment: { path: rel, content } });
+    } catch {
+      this.post({ type: "error", message: `Cannot read file: ${rel}` });
+    }
   }
 
   private async sendFileSuggestions(query: string): Promise<void> {

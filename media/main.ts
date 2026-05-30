@@ -294,14 +294,17 @@ function pickSuggestion(i: number) {
     hideSuggestions();
     return;
   }
+  // Drop the typed "@partial" (the "@" sits just before mentionStart) ...
   const pos = inputEl.selectionStart ?? 0;
-  const before = inputEl.value.slice(0, mentionStart);
+  const before = inputEl.value.slice(0, Math.max(0, mentionStart - 1));
   const after = inputEl.value.slice(pos);
-  inputEl.value = before + pick + " " + after;
-  const caret = (before + pick + " ").length;
+  inputEl.value = before + after;
+  const caret = before.length;
   inputEl.setSelectionRange(caret, caret);
   hideSuggestions();
   inputEl.focus();
+  // ... and attach the actual file content as a chip.
+  vscode.postMessage({ type: "attachByPath", path: pick });
 }
 
 // ---- Inbound messages ----

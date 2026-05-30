@@ -117,6 +117,7 @@ export type FromWebview =
       model: string;
     }
   | { type: "requestFileSuggestions"; query: string }
+  | { type: "attachByPath"; path: string }
   | { type: "openConfig" }
   | { type: "removeAttachment"; index: number };
 
