@@ -1,0 +1,95 @@
+{
+  "name": "evlampy",
+  "displayName": "Evlampy",
+  "description": "A dumb, token-frugal LLM shell for VS Code. No agentic loop. One request, you control the context, diffs apply automatically.",
+  "version": "0.0.1",
+  "publisher": "evlampy",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "evlampy",
+          "title": "Evlampy",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "evlampy": [
+        {
+          "id": "evlampy.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "evlampy.addToChat",
+        "title": "Evlampy: Add File/Selection to Chat"
+      },
+      {
+        "command": "evlampy.focusChat",
+        "title": "Evlampy: Focus Chat"
+      },
+      {
+        "command": "evlampy.acceptAll",
+        "title": "Evlampy: Accept All Pending Diffs"
+      },
+      {
+        "command": "evlampy.rejectAll",
+        "title": "Evlampy: Reject All Pending Diffs"
+      },
+      {
+        "command": "evlampy.openConfig",
+        "title": "Evlampy: Open Config"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "evlampy.addToChat",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Evlampy",
+      "properties": {
+        "evlampy.configPath": {
+          "type": "string",
+          "default": ".evlampy/config.json",
+          "description": "Path (relative to the workspace root, or absolute) to the Evlampy JSON config file."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "node esbuild.js --production",
+    "vscode:prepublish": "node esbuild.js --production"
+  },
+  "dependencies": {
+    "marked": "^12.0.2",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.4.5"
+  }
+}
