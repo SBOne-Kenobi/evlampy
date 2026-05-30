@@ -103,9 +103,6 @@ export type ToWebview =
   | { type: "assistantDone"; usage?: UsageInfo }
   | { type: "fileSuggestions"; query: string; items: string[] }
   | { type: "applyReport"; report: ApplyReport }
-  | { type: "review"; files: ReviewFile[] }
-  | { type: "reviewUpdate"; path: string; status: ReviewStatus }
-  | { type: "reviewDone" }
   | { type: "clearChat" }
   | { type: "loadChat"; turns: DisplayTurn[]; totalCost: number; totalTokens: number }
   | { type: "status"; text: string }
@@ -120,9 +117,6 @@ export type FromWebview =
       model: string;
     }
   | { type: "requestFileSuggestions"; query: string }
-  | { type: "acceptFile"; path: string }
-  | { type: "rejectFile"; path: string }
-  | { type: "openFile"; path: string }
   | { type: "openConfig" }
   | { type: "removeAttachment"; index: number };
 

@@ -31,18 +31,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly diffs: DiffManager
-  ) {
-    // Forward review state changes (incl. decisions made from the diff editor) to the panel.
-    this.diffs.onReviewChange((ev) => {
-      if (ev.kind === "start") {
-        this.post({ type: "review", files: ev.files });
-      } else if (ev.kind === "update") {
-        this.post({ type: "reviewUpdate", path: ev.path, status: ev.status });
-      } else {
-        this.post({ type: "reviewDone" });
-      }
-    });
-  }
+  ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -76,12 +65,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.runChat(m.text, m.attachments, m.model);
       case "requestFileSuggestions":
         return this.sendFileSuggestions(m.query);
-      case "acceptFile":
-        return this.diffs.acceptFile(m.path);
-      case "rejectFile":
-        return this.diffs.rejectFile(m.path);
-      case "openFile":
-        return this.diffs.showFile(m.path);
       case "openConfig":
         return void vscode.commands.executeCommand("evlampy.openConfig");
       case "removeAttachment":
@@ -177,9 +160,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Parse + apply diffs from the completed message.
     const ops = parseDiffOps(full);
     if (ops.length > 0) {
-      this.post({ type: "status", text: `Applying ${ops.length} change(s)…` });
       const report = await this.diffs.apply(ops);
       this.post({ type: "applyReport", report });
+      if (report.appliedCount > 0) {
+        this.post({
+          type: "status",
+          text: `${report.appliedCount} file(s) to review in the diff editor — ✓ / ✗ per file, or Accept all / Reject all in the editor toolbar.`,
+        });
+      }
     }
 
     this.post({ type: "assistantDone", usage });
@@ -305,10 +293,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="messages"></div>
-  <div id="review" class="hidden">
-    <div id="reviewhead"></div>
-    <div id="reviewlist"></div>
-  </div>
   <div id="attachments"></div>
   <div id="suggestions" class="hidden"></div>
   <div id="composer">

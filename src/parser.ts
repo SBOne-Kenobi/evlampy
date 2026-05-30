@@ -54,8 +54,11 @@ function matchOpenFence(line: string): OpenFence | undefined {
   return { ticks: m[2], kind: m[3].toLowerCase(), path: m[4].trim() };
 }
 
-function isCloseFence(line: string, ticks: string): boolean {
-  return new RegExp(`^\\s*${ticks}\\s*$`).test(line);
+function isCloseFence(line: string, openTicks: string): boolean {
+  // CommonMark: a fence closes on a line with at least as many backticks as the
+  // opener. This lets the model wrap content that itself contains ``` by opening
+  // with a longer run (e.g. ````), so inner ``` lines don't close the block early.
+  return new RegExp(`^\\s*\`{${openTicks.length},}\\s*$`).test(line);
 }
 
 function toOp(kind: string, path: string, body: string): DiffOp | undefined {

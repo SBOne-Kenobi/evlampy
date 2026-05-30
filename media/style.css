@@ -125,8 +125,7 @@ body {
   border-radius: 4px;
 }
 
-#suggestions.hidden,
-#review.hidden {
+#suggestions.hidden {
   display: none;
 }
 
@@ -209,81 +208,3 @@ button:disabled {
   cursor: default;
 }
 
-/* ---- Per-file review list ---- */
-
-#review {
-  border-top: 1px solid var(--vscode-panel-border, #333);
-  padding: 6px var(--gap);
-  max-height: 40%;
-  overflow-y: auto;
-}
-
-#reviewhead {
-  font-size: 0.82em;
-  opacity: 0.8;
-  margin-bottom: 4px;
-}
-
-.revrow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-}
-
-.revicon {
-  width: 1em;
-  text-align: center;
-  flex: 0 0 auto;
-}
-
-.status-pending .revicon {
-  opacity: 0.6;
-}
-.status-accepted .revicon {
-  color: var(--vscode-testing-iconPassed, #3fb950);
-}
-.status-rejected .revicon {
-  color: var(--vscode-testing-iconFailed, #f85149);
-  text-decoration: none;
-}
-
-.revname {
-  flex: 1 1 auto;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-  font-size: 0.9em;
-}
-
-.revname:hover {
-  text-decoration: underline;
-}
-
-.status-rejected .revname {
-  opacity: 0.55;
-  text-decoration: line-through;
-}
-.status-accepted .revname {
-  opacity: 0.75;
-}
-
-.revbtn {
-  flex: 0 0 auto;
-  padding: 1px 7px;
-  line-height: 1.3;
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  color: var(--vscode-button-secondaryForeground, #fff);
-}
-
-.revbtn.accept:hover:not(:disabled) {
-  background: var(--vscode-testing-iconPassed, #3fb950);
-  color: #fff;
-}
-.revbtn.reject:hover:not(:disabled) {
-  background: var(--vscode-testing-iconFailed, #f85149);
-  color: #fff;
-}

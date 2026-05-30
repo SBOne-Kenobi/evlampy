@@ -54,6 +54,16 @@
         "icon": "$(discard)"
       },
       {
+        "command": "evlampy.acceptAll",
+        "title": "Evlampy: Accept All Files",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "evlampy.rejectAll",
+        "title": "Evlampy: Reject All Files",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "evlampy.newChat",
         "title": "Evlampy: New Chat",
         "icon": "$(add)"
@@ -91,6 +101,16 @@
           "command": "evlampy.rejectFile",
           "when": "evlampy.reviewDiffActive",
           "group": "navigation@2"
+        },
+        {
+          "command": "evlampy.acceptAll",
+          "when": "evlampy.reviewDiffActive",
+          "group": "navigation@3"
+        },
+        {
+          "command": "evlampy.rejectAll",
+          "when": "evlampy.reviewDiffActive",
+          "group": "navigation@4"
         }
       ]
     },

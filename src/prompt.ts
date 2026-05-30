@@ -45,6 +45,9 @@ RULES — follow exactly:
   include a few adjacent lines so the match is unambiguous. Otherwise keep SEARCH as small as possible.
 - NEVER write placeholder comments like "// ... existing code ...". Output real code only.
 - NEVER include line numbers in the code.
+- Fence length: open each evlampy block with a backtick run LONGER than any backtick
+  run inside it. If the code you emit contains a line with \`\`\`, open the block with
+  four backticks (\`\`\`\`) — or more — and close it with the same number.
 - Put the file path in the info string (after the ":"), never above the fence.
 - Prefer evlampy:edit over evlampy:rewrite to save tokens.
 - If you lack the files or information to make the change safely, DO NOT guess: say what you need,

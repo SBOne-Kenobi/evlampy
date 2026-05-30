@@ -38,6 +38,8 @@ export function activate(context: vscode.ExtensionContext): void {
         await diffs.rejectFile(rel);
       }
     }),
+    vscode.commands.registerCommand("evlampy.acceptAll", () => diffs.acceptAll()),
+    vscode.commands.registerCommand("evlampy.rejectAll", () => diffs.rejectAll()),
     vscode.commands.registerCommand("evlampy.newChat", () => provider.newChat()),
     vscode.commands.registerCommand("evlampy.chatHistory", () =>
       provider.showHistory()

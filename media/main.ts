@@ -15,8 +15,6 @@ interface UsageInfo {
 interface ApplyResultItem { path: string; ok: boolean; detail: string; }
 interface ApplyReport { items: ApplyResultItem[]; appliedCount: number; failedCount: number; }
 
-type ReviewStatus = "pending" | "accepted" | "rejected";
-interface ReviewFile { path: string; status: ReviewStatus; detail: string; }
 interface DisplayTurn { role: "user" | "assistant"; text: string; }
 
 type ToWebview =
@@ -27,9 +25,6 @@ type ToWebview =
   | { type: "assistantDone"; usage?: UsageInfo }
   | { type: "fileSuggestions"; query: string; items: string[] }
   | { type: "applyReport"; report: ApplyReport }
-  | { type: "review"; files: ReviewFile[] }
-  | { type: "reviewUpdate"; path: string; status: ReviewStatus }
-  | { type: "reviewDone" }
   | { type: "clearChat" }
   | { type: "loadChat"; turns: DisplayTurn[]; totalCost: number; totalTokens: number }
   | { type: "status"; text: string }
@@ -53,9 +48,6 @@ const inputEl = $<HTMLTextAreaElement>("input");
 const modelEl = $<HTMLSelectElement>("model");
 const costEl = $("cost");
 const sendBtn = $<HTMLButtonElement>("send");
-const reviewEl = $("review");
-const reviewHeadEl = $("reviewhead");
-const reviewListEl = $("reviewlist");
 
 let attachments: Attachment[] = [];
 let streaming = false;
@@ -193,7 +185,6 @@ function send() {
   inputEl.value = "";
   attachments = [];
   renderAttachments();
-  clearReview();
 }
 
 function attachmentsLabel(): string {
@@ -370,15 +361,6 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
     case "applyReport":
       renderApplyReport(m.report);
       break;
-    case "review":
-      renderReview(m.files);
-      break;
-    case "reviewUpdate":
-      updateReviewRow(m.path, m.status);
-      break;
-    case "reviewDone":
-      reviewHeadEl.textContent = "Review complete.";
-      break;
     case "clearChat":
       resetChat();
       break;
@@ -414,26 +396,11 @@ function renderApplyReport(report: ApplyReport) {
   addMessage("system", `**${failed.length} change(s) not applied**\n\n${lines}`);
 }
 
-// ---- Per-file review list ----
-
-const STATUS_ICON: Record<ReviewStatus, string> = {
-  pending: "○",
-  accepted: "✓",
-  rejected: "✗",
-};
-
-function clearReview() {
-  reviewEl.classList.add("hidden");
-  reviewListEl.innerHTML = "";
-  reviewHeadEl.textContent = "";
-}
-
 /** Wipe the visible chat (keeps the model list/selection). */
 function resetChat() {
   messagesEl.innerHTML = "";
   attachments = [];
   renderAttachments();
-  clearReview();
   transcript = [];
   totalCost = 0;
   totalTokens = 0;
@@ -442,75 +409,6 @@ function resetChat() {
   sendBtn.disabled = false;
   renderCost();
   saveState();
-}
-
-function renderReview(files: ReviewFile[]) {
-  if (files.length === 0) {
-    clearReview();
-    return;
-  }
-  reviewEl.classList.remove("hidden");
-  reviewHeadEl.textContent = `Review ${files.length} file(s)`;
-  reviewListEl.innerHTML = "";
-  files.forEach((f) => reviewListEl.appendChild(reviewRow(f)));
-}
-
-function reviewRow(f: ReviewFile): HTMLElement {
-  const row = document.createElement("div");
-  row.className = `revrow status-${f.status}`;
-  row.dataset.path = f.path;
-
-  const icon = document.createElement("span");
-  icon.className = "revicon";
-  icon.textContent = STATUS_ICON[f.status];
-
-  const name = document.createElement("span");
-  name.className = "revname";
-  name.textContent = f.path;
-  name.title = `${f.path} — ${f.detail}`;
-  name.onclick = () => vscode.postMessage({ type: "openFile", path: f.path });
-
-  const accept = document.createElement("button");
-  accept.className = "revbtn accept";
-  accept.textContent = "✓";
-  accept.title = "Accept this file";
-  accept.onclick = () => vscode.postMessage({ type: "acceptFile", path: f.path });
-
-  const reject = document.createElement("button");
-  reject.className = "revbtn reject";
-  reject.textContent = "✗";
-  reject.title = "Reject this file";
-  reject.onclick = () => vscode.postMessage({ type: "rejectFile", path: f.path });
-
-  row.append(icon, name, accept, reject);
-  if (f.status !== "pending") {
-    accept.disabled = true;
-    reject.disabled = true;
-  }
-  return row;
-}
-
-function updateReviewRow(path: string, status: ReviewStatus) {
-  const row = reviewListEl.querySelector<HTMLElement>(
-    `.revrow[data-path="${cssEscape(path)}"]`
-  );
-  if (!row) {
-    return;
-  }
-  row.className = `revrow status-${status}`;
-  const icon = row.querySelector(".revicon");
-  if (icon) {
-    icon.textContent = STATUS_ICON[status];
-  }
-  row.querySelectorAll<HTMLButtonElement>(".revbtn").forEach((b) => (b.disabled = true));
-
-  const remaining = reviewListEl.querySelectorAll(".revrow.status-pending").length;
-  reviewHeadEl.textContent =
-    remaining > 0 ? `Review — ${remaining} file(s) left` : "Review complete.";
-}
-
-function cssEscape(s: string): string {
-  return s.replace(/["\\]/g, "\\$&");
 }
 
 function sameAttachment(a: Attachment, b: Attachment): boolean {

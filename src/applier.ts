@@ -351,6 +351,33 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     }
   }
 
+  /** Accept every still-pending file at once. */
+  async acceptAll(): Promise<void> {
+    for (const item of this.items.filter((i) => i.status === "pending")) {
+      if (!item.deleted) {
+        const doc = await vscode.workspace.openTextDocument(item.uri);
+        if (doc.isDirty) {
+          await doc.save();
+        }
+      }
+      item.status = "accepted";
+      this._onReviewChange.fire({ kind: "update", path: item.rel, status: "accepted" });
+      await this.closeDiffTab(item);
+    }
+    this._onReviewChange.fire({ kind: "done" });
+  }
+
+  /** Reject (revert) every still-pending file at once. */
+  async rejectAll(): Promise<void> {
+    for (const item of this.items.filter((i) => i.status === "pending")) {
+      await this.revert(item);
+      item.status = "rejected";
+      this._onReviewChange.fire({ kind: "update", path: item.rel, status: "rejected" });
+      await this.closeDiffTab(item);
+    }
+    this._onReviewChange.fire({ kind: "done" });
+  }
+
   private async revert(item: ReviewItem): Promise<void> {
     if (item.deleted && item.original !== null) {
       const we = new vscode.WorkspaceEdit();
