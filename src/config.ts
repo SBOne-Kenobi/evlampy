@@ -108,8 +108,8 @@ const SAMPLE_CONFIG = `{
   "userSystemPromptPath": ".evlampy/system.md",
   "baseURL": "https://openrouter.ai/api/v1",
   "apiKey": "\${env:OPENROUTER_API_KEY}",
-  "models": ["qwen/qwen3-max", "deepseek/deepseek-chat"],
-  "defaultModel": "qwen/qwen3-max",
+  "models": ["qwen/qwen3-coder-flash"],
+  "defaultModel": "qwen/qwen3-coder-flash",
   "provider": {},
   "reasoning": { "effort": "high" },
   "temperature": 0.3
