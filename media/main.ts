@@ -120,12 +120,63 @@ function addMessage(role: "user" | "assistant" | "system", text: string): HTMLEl
   el.className = `msg ${role}`;
   if (role === "user") {
     el.textContent = text;
+  } else if (role === "assistant") {
+    el.innerHTML = marked.parse(evlampyDisplay(text)) as string;
   } else {
     el.innerHTML = marked.parse(text) as string;
   }
   messagesEl.appendChild(el);
   scrollToBottom();
   return el;
+}
+
+const OPEN_FENCE_RE = /^(\s*)(`{3,})\s*evlampy:([a-zA-Z]+)\s+(.+?)\s*$/;
+const SEARCH_RE = /^<{5,}\s*SEARCH\s*$/;
+const SEP_RE = /^={5,}\s*$/;
+const REPLACE_RE = /^>{5,}\s*REPLACE\s*$/;
+
+/**
+ * Replace evlampy:* code blocks with a compact placeholder so the raw diff
+ * (and its inner ``` fences) never reaches the Markdown renderer. Mirrors the
+ * parser's structural rule for edit blocks; works on partial (streaming) text.
+ */
+function evlampyDisplay(raw: string): string {
+  const lines = raw.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const m = OPEN_FENCE_RE.exec(lines[i]);
+    if (!m) {
+      out.push(lines[i]);
+      i++;
+      continue;
+    }
+    const ticks = m[2].length;
+    const kind = m[3].toLowerCase();
+    const path = m[4].trim();
+    out.push("", `📝 \`${kind}\` → \`${path}\``, "");
+    i++;
+    const closeRe = new RegExp(`^\\s*\`{${ticks},}\\s*$`);
+    if (kind === "edit") {
+      let mode: "between" | "search" | "replace" = "between";
+      for (; i < lines.length; i++) {
+        const line = lines[i];
+        if (mode === "between") {
+          if (closeRe.test(line)) { i++; break; }
+          if (SEARCH_RE.test(line)) mode = "search";
+        } else if (mode === "search") {
+          if (SEP_RE.test(line)) mode = "replace";
+        } else if (REPLACE_RE.test(line)) {
+          mode = "between";
+        }
+      }
+    } else {
+      for (; i < lines.length; i++) {
+        if (closeRe.test(lines[i])) { i++; break; }
+      }
+    }
+  }
+  return out.join("\n");
 }
 
 function scrollToBottom() {
@@ -340,7 +391,9 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
     case "assistantDelta":
       if (currentAssistant) {
         currentAssistant.raw += m.text;
-        currentAssistant.el.innerHTML = marked.parse(currentAssistant.raw) as string;
+        currentAssistant.el.innerHTML = marked.parse(
+          evlampyDisplay(currentAssistant.raw)
+        ) as string;
         scrollToBottom();
       }
       break;
