@@ -5,12 +5,28 @@ import { chat } from "./openrouter";
 import { loadConfig, loadUserSystemPrompt, ConfigError } from "./config";
 import { buildSystemMessage, buildUserMessage } from "./prompt";
 import { parseDiffOps } from "./parser";
-import { Attachment, FromWebview, ToWebview } from "./types";
+import {
+  Attachment,
+  ChatMsg,
+  ChatSession,
+  ConvTurn,
+  FromWebview,
+  ToWebview,
+} from "./types";
+
+const HISTORY_KEY = "evlampy.history";
+const HISTORY_LIMIT = 5;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "evlampy.chatView";
   private view?: vscode.WebviewView;
   private abort?: AbortController;
+
+  // Current conversation (source of truth for what's sent to the model).
+  private turns: ConvTurn[] = [];
+  private sessionId = newId();
+  private totalCost = 0;
+  private totalTokens = 0;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -108,7 +124,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const userSystem = await loadUserSystemPrompt(cfg);
     const system = buildSystemMessage(userSystem);
-    const user = buildUserMessage(text, attachments);
+
+    // Record the user turn, then build the full message list from the whole chat.
+    this.turns.push({ role: "user", text, attachments });
+    const messages: ChatMsg[] = [
+      { role: "system", content: system },
+      ...this.turns.map((t) =>
+        t.role === "user"
+          ? { role: "user" as const, content: buildUserMessage(t.text, t.attachments ?? []) }
+          : { role: "assistant" as const, content: t.text }
+      ),
+    ];
 
     this.abort = new AbortController();
     this.post({ type: "assistantStart" });
@@ -119,8 +145,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const res = await chat({
         config: cfg,
         model: model || cfg.defaultModel || cfg.models[0],
-        system,
-        user,
+        messages,
         signal: this.abort.signal,
         onDelta: (d) => {
           full += d;
@@ -130,6 +155,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       usage = res.usage;
       full = res.text || full;
     } catch (e) {
+      // Roll back the user turn so a failed request doesn't poison the context.
+      this.turns.pop();
       this.post({
         type: "error",
         message: `Request failed: ${(e as Error).message}`,
@@ -137,6 +164,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: "assistantDone" });
       return;
     }
+
+    this.turns.push({ role: "assistant", text: full });
+    if (usage) {
+      this.totalTokens += usage.totalTokens;
+      if (usage.cost) {
+        this.totalCost += usage.cost;
+      }
+    }
+    await this.saveSession();
 
     // Parse + apply diffs from the completed message.
     const ops = parseDiffOps(full);
@@ -147,6 +183,79 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.post({ type: "assistantDone", usage });
+  }
+
+  // ---- New chat + history ----
+
+  async newChat(): Promise<void> {
+    await this.saveSession();
+    this.turns = [];
+    this.sessionId = newId();
+    this.totalCost = 0;
+    this.totalTokens = 0;
+    await vscode.commands.executeCommand("evlampy.chatView.focus");
+    this.post({ type: "clearChat" });
+  }
+
+  async showHistory(): Promise<void> {
+    const sessions = this.loadHistory();
+    if (sessions.length === 0) {
+      vscode.window.showInformationMessage("Evlampy: no chat history yet.");
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(
+      sessions.map((s) => ({
+        label: s.title || "(untitled)",
+        description: `${s.turns.filter((t) => t.role === "user").length} msg · ${fmtCost(s.totalCost)}`,
+        detail: new Date(s.updatedAt).toLocaleString(),
+        session: s,
+      })),
+      { placeHolder: "Restore a chat" }
+    );
+    if (pick) {
+      await this.restore(pick.session);
+    }
+  }
+
+  private async restore(s: ChatSession): Promise<void> {
+    await this.saveSession(); // don't lose the current one
+    this.turns = s.turns.map((t) => ({ ...t }));
+    this.sessionId = s.id;
+    this.totalCost = s.totalCost;
+    this.totalTokens = s.totalTokens;
+    await vscode.commands.executeCommand("evlampy.chatView.focus");
+    this.post({
+      type: "loadChat",
+      turns: this.turns.map((t) => ({ role: t.role, text: t.text })),
+      totalCost: this.totalCost,
+      totalTokens: this.totalTokens,
+    });
+  }
+
+  private loadHistory(): ChatSession[] {
+    return this.context.workspaceState.get<ChatSession[]>(HISTORY_KEY, []);
+  }
+
+  /** Upsert the current session into history (most-recent first, capped). */
+  private async saveSession(): Promise<void> {
+    if (this.turns.length === 0) {
+      return;
+    }
+    const firstUser = this.turns.find((t) => t.role === "user");
+    const session: ChatSession = {
+      id: this.sessionId,
+      title: (firstUser?.text ?? "Chat").slice(0, 60),
+      turns: this.turns.map((t) => ({ ...t })),
+      totalCost: this.totalCost,
+      totalTokens: this.totalTokens,
+      updatedAt: Date.now(),
+    };
+    const list = this.loadHistory().filter((s) => s.id !== session.id);
+    list.unshift(session);
+    await this.context.workspaceState.update(
+      HISTORY_KEY,
+      list.slice(0, HISTORY_LIMIT)
+    );
   }
 
   private async sendFileSuggestions(query: string): Promise<void> {
@@ -214,6 +323,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </body>
 </html>`;
   }
+}
+
+function newId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function fmtCost(c: number): string {
+  return "$" + (c < 0.01 ? c.toFixed(5) : c.toFixed(4));
 }
 
 function getNonce(): string {

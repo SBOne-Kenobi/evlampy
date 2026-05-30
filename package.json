@@ -54,11 +54,33 @@
         "icon": "$(discard)"
       },
       {
+        "command": "evlampy.newChat",
+        "title": "Evlampy: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "evlampy.chatHistory",
+        "title": "Evlampy: Chat History",
+        "icon": "$(history)"
+      },
+      {
         "command": "evlampy.openConfig",
         "title": "Evlampy: Open Config"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "evlampy.newChat",
+          "when": "view == evlampy.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "evlampy.chatHistory",
+          "when": "view == evlampy.chatView",
+          "group": "navigation@2"
+        }
+      ],
       "editor/title": [
         {
           "command": "evlampy.acceptFile",

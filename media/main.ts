@@ -17,6 +17,7 @@ interface ApplyReport { items: ApplyResultItem[]; appliedCount: number; failedCo
 
 type ReviewStatus = "pending" | "accepted" | "rejected";
 interface ReviewFile { path: string; status: ReviewStatus; detail: string; }
+interface DisplayTurn { role: "user" | "assistant"; text: string; }
 
 type ToWebview =
   | { type: "init"; models: string[]; defaultModel: string }
@@ -29,6 +30,8 @@ type ToWebview =
   | { type: "review"; files: ReviewFile[] }
   | { type: "reviewUpdate"; path: string; status: ReviewStatus }
   | { type: "reviewDone" }
+  | { type: "clearChat" }
+  | { type: "loadChat"; turns: DisplayTurn[]; totalCost: number; totalTokens: number }
   | { type: "status"; text: string }
   | { type: "error"; message: string };
 
@@ -59,8 +62,64 @@ let streaming = false;
 let currentAssistant: { el: HTMLElement; raw: string } | null = null;
 let totalCost = 0;
 let totalTokens = 0;
+let availableModels: string[] = [];
+let selectedModel = "";
+let transcript: DisplayTurn[] = [];
 
 marked.setOptions({ gfm: true, breaks: false });
+
+// ---- Persisted webview state (survives reload / hide) ----
+
+interface SavedState {
+  availableModels: string[];
+  selectedModel: string;
+  transcript: DisplayTurn[];
+  totalCost: number;
+  totalTokens: number;
+}
+
+function saveState() {
+  vscode.setState({
+    availableModels,
+    selectedModel,
+    transcript,
+    totalCost,
+    totalTokens,
+  } satisfies SavedState);
+}
+
+function restoreState() {
+  const s = vscode.getState() as SavedState | undefined;
+  if (!s) {
+    return;
+  }
+  availableModels = s.availableModels ?? [];
+  selectedModel = s.selectedModel ?? "";
+  transcript = s.transcript ?? [];
+  totalCost = s.totalCost ?? 0;
+  totalTokens = s.totalTokens ?? 0;
+  populateModels();
+  transcript.forEach((t) => addMessage(t.role, t.text));
+  renderCost();
+}
+
+function populateModels() {
+  modelEl.innerHTML = "";
+  availableModels.forEach((mod) => {
+    const o = document.createElement("option");
+    o.value = mod;
+    o.textContent = mod;
+    modelEl.appendChild(o);
+  });
+  if (selectedModel && availableModels.includes(selectedModel)) {
+    modelEl.value = selectedModel;
+  }
+}
+
+modelEl.addEventListener("change", () => {
+  selectedModel = modelEl.value;
+  saveState();
+});
 
 // ---- Rendering ----
 
@@ -103,16 +162,12 @@ function renderAttachments() {
   });
 }
 
-function setCost(usage?: UsageInfo) {
-  if (usage) {
-    totalTokens += usage.totalTokens;
-    if (usage.cost) totalCost += usage.cost;
-  }
-  const last = usage
-    ? `last: ${fmtCost(usage.cost)} · ${usage.totalTokens} tok`
+function renderCost(lastUsage?: UsageInfo) {
+  const last = lastUsage
+    ? `last: ${fmtCost(lastUsage.cost)} · ${lastUsage.totalTokens} tok`
     : "";
   const total = `total: ${fmtCost(totalCost)} · ${totalTokens} tok`;
-  costEl.textContent = usage ? `${last}  |  ${total}` : total;
+  costEl.textContent = lastUsage ? `${last}  |  ${total}` : total;
 }
 
 function fmtCost(c?: number): string {
@@ -125,7 +180,10 @@ function fmtCost(c?: number): string {
 function send() {
   const text = inputEl.value.trim();
   if (!text || streaming) return;
-  addMessage("user", attachmentsLabel() + text);
+  const display = attachmentsLabel() + text;
+  addMessage("user", display);
+  transcript.push({ role: "user", text: display });
+  saveState();
   vscode.postMessage({
     type: "send",
     text,
@@ -261,15 +319,16 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
   const m = ev.data;
   switch (m.type) {
     case "init": {
-      modelEl.innerHTML = "";
-      m.models.forEach((mod) => {
-        const o = document.createElement("option");
-        o.value = mod;
-        o.textContent = mod;
-        modelEl.appendChild(o);
-      });
-      if (m.defaultModel) modelEl.value = m.defaultModel;
-      setCost();
+      // Don't wipe a working dropdown if a re-init arrives with no models.
+      if (m.models.length > 0) {
+        availableModels = m.models;
+        if (!selectedModel || !availableModels.includes(selectedModel)) {
+          selectedModel = m.defaultModel || availableModels[0];
+        }
+        populateModels();
+        saveState();
+      }
+      renderCost();
       break;
     }
     case "addAttachment":
@@ -294,8 +353,16 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
     case "assistantDone":
       streaming = false;
       sendBtn.disabled = false;
+      if (currentAssistant) {
+        transcript.push({ role: "assistant", text: currentAssistant.raw });
+      }
       currentAssistant = null;
-      setCost(m.usage);
+      if (m.usage) {
+        totalTokens += m.usage.totalTokens;
+        if (m.usage.cost) totalCost += m.usage.cost;
+      }
+      renderCost(m.usage);
+      saveState();
       break;
     case "fileSuggestions":
       showSuggestions(m.items);
@@ -311,6 +378,18 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       break;
     case "reviewDone":
       reviewHeadEl.textContent = "Review complete.";
+      break;
+    case "clearChat":
+      resetChat();
+      break;
+    case "loadChat":
+      resetChat();
+      transcript = m.turns.map((t) => ({ role: t.role, text: t.text }));
+      transcript.forEach((t) => addMessage(t.role, t.text));
+      totalCost = m.totalCost;
+      totalTokens = m.totalTokens;
+      renderCost();
+      saveState();
       break;
     case "status":
       addMessage("system", `_${m.text}_`);
@@ -347,6 +426,22 @@ function clearReview() {
   reviewEl.classList.add("hidden");
   reviewListEl.innerHTML = "";
   reviewHeadEl.textContent = "";
+}
+
+/** Wipe the visible chat (keeps the model list/selection). */
+function resetChat() {
+  messagesEl.innerHTML = "";
+  attachments = [];
+  renderAttachments();
+  clearReview();
+  transcript = [];
+  totalCost = 0;
+  totalTokens = 0;
+  currentAssistant = null;
+  streaming = false;
+  sendBtn.disabled = false;
+  renderCost();
+  saveState();
 }
 
 function renderReview(files: ReviewFile[]) {
@@ -430,7 +525,6 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 }
 
-// Hide the diff bar once a new request starts.
-inputEl.addEventListener("focus", () => {});
-
+// Restore any persisted view state, then ask the extension for fresh config.
+restoreState();
 vscode.postMessage({ type: "ready" });

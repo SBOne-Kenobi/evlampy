@@ -1,11 +1,11 @@
 import OpenAI from "openai";
-import { EvlampyConfig, UsageInfo } from "./types";
+import { ChatMsg, EvlampyConfig, UsageInfo } from "./types";
 
 export interface ChatRequest {
   config: EvlampyConfig;
   model: string;
-  system: string;
-  user: string;
+  /** Full message list (system first, then the conversation turns). */
+  messages: ChatMsg[];
   /** Called with each streamed text delta. */
   onDelta: (text: string) => void;
   signal?: AbortSignal;
@@ -33,10 +33,7 @@ export async function chat(req: ChatRequest): Promise<ChatResponse> {
   // Build the body. Extra OpenRouter fields aren't in the SDK type, so cast.
   const body: Record<string, unknown> = {
     model: req.model,
-    messages: [
-      { role: "system", content: req.system },
-      { role: "user", content: req.user },
-    ],
+    messages: req.messages,
     stream: true,
     stream_options: { include_usage: true },
     // Ask OpenRouter to include credit cost in usage.

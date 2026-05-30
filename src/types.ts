@@ -39,6 +39,37 @@ export interface UsageInfo {
   cost?: number;
 }
 
+/** A chat message sent to the model. */
+export interface ChatMsg {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** One turn of a conversation (extension-side source of truth). */
+export interface ConvTurn {
+  role: "user" | "assistant";
+  /** User: the typed prompt. Assistant: the reply text. */
+  text: string;
+  /** User turns only: attachments included with this turn. */
+  attachments?: Attachment[];
+}
+
+/** A saved chat session (history). */
+export interface ChatSession {
+  id: string;
+  title: string;
+  turns: ConvTurn[];
+  totalCost: number;
+  totalTokens: number;
+  updatedAt: number;
+}
+
+/** A turn as shown in the panel (no file bodies). */
+export interface DisplayTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
 /** A single search/replace hunk inside an `evlampy:edit` block. */
 export interface Hunk {
   search: string;
@@ -75,6 +106,8 @@ export type ToWebview =
   | { type: "review"; files: ReviewFile[] }
   | { type: "reviewUpdate"; path: string; status: ReviewStatus }
   | { type: "reviewDone" }
+  | { type: "clearChat" }
+  | { type: "loadChat"; turns: DisplayTurn[]; totalCost: number; totalTokens: number }
   | { type: "status"; text: string }
   | { type: "error"; message: string };
 

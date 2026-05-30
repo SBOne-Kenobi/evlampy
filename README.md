@@ -31,6 +31,11 @@ writes the change; you stay in control and validate.
 If the model lacks context, it simply replies with text (e.g. suggests a command)
 and emits no diffs. You run it. No loop.
 
+**Conversation memory.** Within a chat, each message includes the previous turns,
+so follow-ups have context. Use **New Chat** (the `+` in the view title) to reset
+the context, and **History** (the clock icon) to restore one of the last 5 chats.
+Resetting the context is your token-control lever.
+
 ## Diff format
 
 The model is told to emit fenced blocks whose info string starts with `evlampy:`.
