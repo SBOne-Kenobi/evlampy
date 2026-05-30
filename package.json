@@ -44,18 +44,34 @@
         "title": "Evlampy: Focus Chat"
       },
       {
-        "command": "evlampy.acceptAll",
-        "title": "Evlampy: Accept All Pending Diffs"
+        "command": "evlampy.acceptFile",
+        "title": "Evlampy: Accept This File",
+        "icon": "$(check)"
       },
       {
-        "command": "evlampy.rejectAll",
-        "title": "Evlampy: Reject All Pending Diffs"
+        "command": "evlampy.rejectFile",
+        "title": "Evlampy: Reject This File",
+        "icon": "$(discard)"
       },
       {
         "command": "evlampy.openConfig",
         "title": "Evlampy: Open Config"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "evlampy.acceptFile",
+          "when": "evlampy.reviewDiffActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "evlampy.rejectFile",
+          "when": "evlampy.reviewDiffActive",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "evlampy.addToChat",

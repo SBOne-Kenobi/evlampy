@@ -1,41 +1,56 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { ApplyReport, ApplyResultItem, DiffOp, Hunk } from "./types";
+import {
+  ApplyReport,
+  ApplyResultItem,
+  DiffOp,
+  Hunk,
+  ReviewEvent,
+  ReviewFile,
+  ReviewStatus,
+} from "./types";
 import { findMatch } from "./matcher";
 import { stripPlaceholders } from "./parser";
 
 const ORIG_SCHEME = "evlampy-orig";
 
-interface PendingFile {
+interface ReviewItem {
+  rel: string;
   uri: vscode.Uri;
   /** Original on-disk content; null if the file was newly created. */
   original: string | null;
   /** True if the op deleted the file (already removed from disk). */
   deleted: boolean;
+  /** Virtual URI holding the original content for the diff's left side. */
+  origUri: vscode.Uri;
+  status: ReviewStatus;
+  detail: string;
 }
 
 /**
- * Applies diff ops to documents (leaving them dirty), opens native diff views,
- * and tracks pending changes so the whole batch can be accepted (saved) or
- * rejected (reverted) at once — including files that weren't open before.
+ * Applies diff ops (leaving documents dirty) and drives a linear, per-file
+ * review: one diff at a time, accept (save) or reject (revert) each file, then
+ * auto-advance to the next pending file. No global accept/reject.
  */
 export class DiffManager implements vscode.TextDocumentContentProvider {
-  private pending = new Map<string, PendingFile>();
+  private items: ReviewItem[] = [];
   private originals = new Map<string, string>();
   private counter = 0;
+
+  private readonly _onReviewChange = new vscode.EventEmitter<ReviewEvent>();
+  readonly onReviewChange = this._onReviewChange.event;
 
   constructor(private readonly root: string) {}
 
   register(): vscode.Disposable {
-    return vscode.workspace.registerTextDocumentContentProvider(ORIG_SCHEME, this);
+    return vscode.Disposable.from(
+      vscode.workspace.registerTextDocumentContentProvider(ORIG_SCHEME, this),
+      this._onReviewChange
+    );
   }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
     return this.originals.get(uri.toString()) ?? "";
-  }
-
-  hasPending(): boolean {
-    return this.pending.size > 0;
   }
 
   private resolve(rel: string): vscode.Uri {
@@ -43,23 +58,41 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     return vscode.Uri.file(abs);
   }
 
+  // ---- Apply a batch, then start the review ----
+
   async apply(ops: DiffOp[]): Promise<ApplyReport> {
-    const items: ApplyResultItem[] = [];
-    // Reset previous batch tracking (a new response supersedes it).
-    this.pending.clear();
+    this.items = [];
     this.originals.clear();
 
+    const report: ApplyResultItem[] = [];
     for (const op of ops) {
       try {
-        const item = await this.applyOne(op);
-        items.push(item);
+        report.push(await this.applyOne(op));
       } catch (e) {
-        items.push({ path: op.path, ok: false, detail: (e as Error).message });
+        report.push({ path: op.path, ok: false, detail: (e as Error).message });
       }
     }
 
-    const appliedCount = items.filter((i) => i.ok).length;
-    return { items, appliedCount, failedCount: items.length - appliedCount };
+    const appliedCount = report.filter((i) => i.ok).length;
+
+    if (this.items.length > 0) {
+      this._onReviewChange.fire({ kind: "start", files: this.reviewFiles() });
+      await this.openFirstPending();
+    }
+
+    return {
+      items: report,
+      appliedCount,
+      failedCount: report.length - appliedCount,
+    };
+  }
+
+  private reviewFiles(): ReviewFile[] {
+    return this.items.map((i) => ({
+      path: i.rel,
+      status: i.status,
+      detail: i.detail,
+    }));
   }
 
   private async applyOne(op: DiffOp): Promise<ApplyResultItem> {
@@ -87,15 +120,13 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
   private async applyNew(rel: string, content: string): Promise<ApplyResultItem> {
     const uri = this.resolve(rel);
     if (await this.exists(uri)) {
-      // Fall back to a full rewrite if the model used `new` on an existing file.
       return this.applyRewrite(rel, content);
     }
     const we = new vscode.WorkspaceEdit();
     we.createFile(uri, { ignoreIfExists: true });
     we.insert(uri, new vscode.Position(0, 0), content);
     await vscode.workspace.applyEdit(we);
-    this.track(uri, null, false);
-    await this.openDiff(uri, "", rel);
+    this.track(rel, uri, null, false, "new file");
     return { path: rel, ok: true, detail: "new file" };
   }
 
@@ -103,9 +134,11 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     const uri = this.resolve(rel);
     const doc = await vscode.workspace.openTextDocument(uri);
     const original = doc.getText();
+    if (content === original) {
+      return { path: rel, ok: false, detail: "no change" };
+    }
     await this.replaceWhole(doc, content);
-    this.track(uri, original, false);
-    await this.openDiff(uri, original, rel);
+    this.track(rel, uri, original, false, "rewritten");
     return { path: rel, ok: true, detail: "rewritten" };
   }
 
@@ -114,14 +147,12 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     const doc = await vscode.workspace.openTextDocument(uri);
     const original = doc.getText();
 
-    // Find every hunk against the ORIGINAL text, then splice bottom-up.
     interface Span { start: number; end: number; replace: string; }
     const spans: Span[] = [];
     const failures: string[] = [];
 
     for (let h = 0; h < hunks.length; h++) {
-      const hunk = hunks[h];
-      const outcome = findMatch(original, hunk.search);
+      const outcome = findMatch(original, hunks[h].search);
       if (!outcome.ok) {
         failures.push(`hunk ${h + 1}: ${outcome.reason}`);
         continue;
@@ -129,16 +160,17 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
       spans.push({
         start: outcome.match.start,
         end: outcome.match.end,
-        replace: stripPlaceholders(hunk.replace),
+        replace: stripPlaceholders(hunks[h].replace),
       });
     }
 
     spans.sort((a, b) => b.start - a.start);
-    // Drop overlapping spans (keep the later one already placed).
     let lastStart = Number.MAX_SAFE_INTEGER;
     let newText = original;
+    let overlaps = 0;
     for (const s of spans) {
       if (s.end > lastStart) {
+        overlaps++;
         failures.push("overlapping hunks; one was skipped");
         continue;
       }
@@ -146,11 +178,14 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
       lastStart = s.start;
     }
 
-    const appliedHunks = spans.length - failures.filter((f) => f.includes("overlapping")).length;
+    const appliedHunks = spans.length - overlaps;
     if (newText !== original) {
       await this.replaceWhole(doc, newText);
-      this.track(uri, original, false);
-      await this.openDiff(uri, original, rel);
+      const detail =
+        failures.length > 0
+          ? `${appliedHunks} hunk(s) applied, ${failures.length} failed`
+          : `${hunks.length} hunk(s) applied`;
+      this.track(rel, uri, original, false, detail);
     }
 
     if (failures.length > 0) {
@@ -174,15 +209,31 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     const we = new vscode.WorkspaceEdit();
     we.deleteFile(uri, { ignoreIfNotExists: true });
     await vscode.workspace.applyEdit(we);
-    this.track(uri, original, true);
+    this.track(rel, uri, original, true, "deleted");
     return { path: rel, ok: true, detail: "deleted (reject to restore)" };
   }
 
-  private track(uri: vscode.Uri, original: string | null, deleted: boolean): void {
-    const key = uri.toString();
-    if (!this.pending.has(key)) {
-      this.pending.set(key, { uri, original, deleted });
+  private track(
+    rel: string,
+    uri: vscode.Uri,
+    original: string | null,
+    deleted: boolean,
+    detail: string
+  ): void {
+    if (this.items.some((i) => i.uri.fsPath === uri.fsPath)) {
+      return;
     }
+    const origUri = vscode.Uri.parse(`${ORIG_SCHEME}:${rel}?v=${this.counter++}`);
+    this.originals.set(origUri.toString(), original ?? "");
+    this.items.push({
+      rel,
+      uri,
+      original,
+      deleted,
+      origUri,
+      status: "pending",
+      detail,
+    });
   }
 
   private async replaceWhole(doc: vscode.TextDocument, content: string): Promise<void> {
@@ -195,69 +246,129 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     await vscode.workspace.applyEdit(we);
   }
 
-  private async openDiff(fileUri: vscode.Uri, original: string, label: string): Promise<void> {
-    const origUri = vscode.Uri.parse(
-      `${ORIG_SCHEME}:${label}?v=${this.counter++}`
-    );
-    this.originals.set(origUri.toString(), original);
+  private async openDiff(item: ReviewItem): Promise<void> {
+    if (item.deleted) {
+      // No right-hand document to diff against; show the original being removed.
+      const doc = await vscode.workspace.openTextDocument(item.origUri);
+      await vscode.window.showTextDocument(doc, { preview: false });
+      return;
+    }
     await vscode.commands.executeCommand(
       "vscode.diff",
-      origUri,
-      fileUri,
-      `${label} (Evlampy: original ↔ proposed)`,
+      item.origUri,
+      item.uri,
+      `${item.rel} (Evlampy: original ↔ proposed)`,
       { preview: false }
     );
   }
 
-  /** Save every pending file: the changes become permanent. */
-  async acceptAll(): Promise<number> {
-    let n = 0;
-    for (const p of this.pending.values()) {
-      if (p.deleted) {
-        n++;
-        continue; // already removed from disk
-      }
-      const doc = await vscode.workspace.openTextDocument(p.uri);
-      if (doc.isDirty) {
-        await doc.save();
-      }
-      n++;
+  // ---- Linear navigation ----
+
+  private async openFirstPending(): Promise<void> {
+    const next = this.items.find((i) => i.status === "pending");
+    if (next) {
+      await this.openDiff(next);
     }
-    this.pending.clear();
-    this.originals.clear();
-    return n;
   }
 
-  /** Revert every pending file back to its original on-disk state. */
-  async rejectAll(): Promise<number> {
-    let n = 0;
-    for (const p of this.pending.values()) {
-      if (p.deleted && p.original !== null) {
-        // Recreate the deleted file.
-        const we = new vscode.WorkspaceEdit();
-        we.createFile(p.uri, { ignoreIfExists: true });
-        we.insert(p.uri, new vscode.Position(0, 0), p.original);
-        await vscode.workspace.applyEdit(we);
-        n++;
-        continue;
+  private async advanceFrom(decided: ReviewItem): Promise<void> {
+    await this.closeDiffTab(decided);
+    const next = this.items.find((i) => i.status === "pending");
+    if (next) {
+      await this.openDiff(next);
+    } else {
+      this._onReviewChange.fire({ kind: "done" });
+    }
+  }
+
+  private async closeDiffTab(item: ReviewItem): Promise<void> {
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const input = tab.input as unknown;
+        if (
+          input instanceof vscode.TabInputTextDiff &&
+          input.original.toString() === item.origUri.toString()
+        ) {
+          await vscode.window.tabGroups.close(tab);
+        } else if (
+          input instanceof vscode.TabInputText &&
+          input.uri.toString() === item.origUri.toString()
+        ) {
+          await vscode.window.tabGroups.close(tab);
+        }
       }
-      if (p.original === null) {
-        // Was newly created: delete it.
-        const we = new vscode.WorkspaceEdit();
-        we.deleteFile(p.uri, { ignoreIfNotExists: true });
-        await vscode.workspace.applyEdit(we);
-        n++;
-        continue;
-      }
-      const doc = await vscode.workspace.openTextDocument(p.uri);
-      await this.replaceWhole(doc, p.original);
+    }
+  }
+
+  // ---- Decisions (per file) ----
+
+  /** The review file shown in the currently active diff tab, if any. */
+  activeReviewRel(): string | undefined {
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const input = tab?.input as unknown;
+    if (input instanceof vscode.TabInputTextDiff && input.original.scheme === ORIG_SCHEME) {
+      return this.items.find((i) => i.uri.fsPath === input.modified.fsPath)?.rel;
+    }
+    if (input instanceof vscode.TabInputText && input.uri.scheme === ORIG_SCHEME) {
+      // A deleted-file preview is open.
+      return this.items.find((i) => i.origUri.toString() === input.uri.toString())?.rel;
+    }
+    return undefined;
+  }
+
+  async acceptFile(rel: string): Promise<void> {
+    const item = this.items.find((i) => i.rel === rel && i.status === "pending");
+    if (!item) {
+      return;
+    }
+    if (!item.deleted) {
+      const doc = await vscode.workspace.openTextDocument(item.uri);
       if (doc.isDirty) {
         await doc.save();
       }
-      n++;
     }
-    this.pending.clear();
-    this.originals.clear();
-    return n;
+    item.status = "accepted";
+    this._onReviewChange.fire({ kind: "update", path: rel, status: "accepted" });
+    await this.advanceFrom(item);
+  }
+
+  async rejectFile(rel: string): Promise<void> {
+    const item = this.items.find((i) => i.rel === rel && i.status === "pending");
+    if (!item) {
+      return;
+    }
+    await this.revert(item);
+    item.status = "rejected";
+    this._onReviewChange.fire({ kind: "update", path: rel, status: "rejected" });
+    await this.advanceFrom(item);
+  }
+
+  /** Re-open the diff for a file (e.g. clicked in the panel list). */
+  async showFile(rel: string): Promise<void> {
+    const item = this.items.find((i) => i.rel === rel);
+    if (item) {
+      await this.openDiff(item);
+    }
+  }
+
+  private async revert(item: ReviewItem): Promise<void> {
+    if (item.deleted && item.original !== null) {
+      const we = new vscode.WorkspaceEdit();
+      we.createFile(item.uri, { ignoreIfExists: true });
+      we.insert(item.uri, new vscode.Position(0, 0), item.original);
+      await vscode.workspace.applyEdit(we);
+      return;
+    }
+    if (item.original === null) {
+      const we = new vscode.WorkspaceEdit();
+      we.deleteFile(item.uri, { ignoreIfNotExists: true });
+      await vscode.workspace.applyEdit(we);
+      return;
+    }
+    const doc = await vscode.workspace.openTextDocument(item.uri);
+    await this.replaceWhole(doc, item.original);
+    if (doc.isDirty) {
+      await doc.save();
+    }
   }
 }

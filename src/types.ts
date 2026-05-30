@@ -51,6 +51,17 @@ export type DiffOp =
   | { kind: "rewrite"; path: string; content: string }
   | { kind: "delete"; path: string };
 
+// ---- Review model ----
+
+export type ReviewStatus = "pending" | "accepted" | "rejected";
+
+export interface ReviewFile {
+  path: string;
+  status: ReviewStatus;
+  /** Short note (e.g. "3 hunk(s) applied", "new file", "deleted"). */
+  detail: string;
+}
+
 // ---- Messages: webview <-> extension ----
 
 export type ToWebview =
@@ -61,6 +72,9 @@ export type ToWebview =
   | { type: "assistantDone"; usage?: UsageInfo }
   | { type: "fileSuggestions"; query: string; items: string[] }
   | { type: "applyReport"; report: ApplyReport }
+  | { type: "review"; files: ReviewFile[] }
+  | { type: "reviewUpdate"; path: string; status: ReviewStatus }
+  | { type: "reviewDone" }
   | { type: "status"; text: string }
   | { type: "error"; message: string };
 
@@ -73,8 +87,9 @@ export type FromWebview =
       model: string;
     }
   | { type: "requestFileSuggestions"; query: string }
-  | { type: "acceptAll" }
-  | { type: "rejectAll" }
+  | { type: "acceptFile"; path: string }
+  | { type: "rejectFile"; path: string }
+  | { type: "openFile"; path: string }
   | { type: "openConfig" }
   | { type: "removeAttachment"; index: number };
 
@@ -89,3 +104,10 @@ export interface ApplyReport {
   appliedCount: number;
   failedCount: number;
 }
+
+// ---- Review events (applier -> provider/extension) ----
+
+export type ReviewEvent =
+  | { kind: "start"; files: ReviewFile[] }
+  | { kind: "update"; path: string; status: ReviewStatus }
+  | { kind: "done" };

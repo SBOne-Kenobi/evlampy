@@ -15,7 +15,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly diffs: DiffManager
-  ) {}
+  ) {
+    // Forward review state changes (incl. decisions made from the diff editor) to the panel.
+    this.diffs.onReviewChange((ev) => {
+      if (ev.kind === "start") {
+        this.post({ type: "review", files: ev.files });
+      } else if (ev.kind === "update") {
+        this.post({ type: "reviewUpdate", path: ev.path, status: ev.status });
+      } else {
+        this.post({ type: "reviewDone" });
+      }
+    });
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -49,16 +60,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.runChat(m.text, m.attachments, m.model);
       case "requestFileSuggestions":
         return this.sendFileSuggestions(m.query);
-      case "acceptAll": {
-        const n = await this.diffs.acceptAll();
-        this.post({ type: "status", text: `Accepted ${n} file(s).` });
-        return;
-      }
-      case "rejectAll": {
-        const n = await this.diffs.rejectAll();
-        this.post({ type: "status", text: `Reverted ${n} file(s).` });
-        return;
-      }
+      case "acceptFile":
+        return this.diffs.acceptFile(m.path);
+      case "rejectFile":
+        return this.diffs.rejectFile(m.path);
+      case "openFile":
+        return this.diffs.showFile(m.path);
       case "openConfig":
         return void vscode.commands.executeCommand("evlampy.openConfig");
       case "removeAttachment":
@@ -189,6 +196,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="messages"></div>
+  <div id="review" class="hidden">
+    <div id="reviewhead"></div>
+    <div id="reviewlist"></div>
+  </div>
   <div id="attachments"></div>
   <div id="suggestions" class="hidden"></div>
   <div id="composer">
@@ -197,11 +208,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <select id="model" title="Model"></select>
       <span id="cost" class="cost"></span>
       <button id="send" title="Send (Enter)">Send</button>
-    </div>
-    <div id="diffbar" class="hidden">
-      <span id="diffsummary"></span>
-      <button id="accept" class="accept">Accept all</button>
-      <button id="reject" class="reject">Reject all</button>
     </div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

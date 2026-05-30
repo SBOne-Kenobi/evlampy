@@ -19,10 +19,14 @@ writes the change; you stay in control and validate.
    - Type `@` in the chat → fuzzy file picker (grep over workspace file names).
 3. Type your request and hit **Enter**. Your prompt + attachments go in a single
    call to your OpenRouter (OpenAI-compatible) endpoint.
-4. The reply streams in as Markdown. Any diff blocks are applied automatically;
-   touched files open as **original ↔ proposed** diffs.
-5. Edit right there if you like, then **Accept all** (saves) or **Reject all**
-   (reverts) — works for files that weren't open before too. `Ctrl+S` also accepts.
+4. The reply streams in as Markdown. Any diff blocks are applied automatically and
+   you **review them one file at a time** (linear review): the first changed file
+   opens as an **original ↔ proposed** diff.
+5. Decide per file — **✓ / ✗** buttons in the diff editor's title bar (or in the
+   review list in the panel). ✓ accepts (saves), ✗ rejects (reverts). After each
+   decision the next pending file opens automatically, until the review is complete.
+   You can edit the proposed side before accepting. Works for files that weren't
+   open before too.
 
 If the model lacks context, it simply replies with text (e.g. suggests a command)
 and emits no diffs. You run it. No loop.
