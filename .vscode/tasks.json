@@ -2,10 +2,23 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "install",
+      "type": "shell",
+      "command": "npm install",
+      "windows": {
+        "options": {
+          "shell": { "executable": "cmd.exe", "args": ["/c"] }
+        }
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "build",
       "type": "process",
       "command": "node",
       "args": ["esbuild.js"],
+      "dependsOn": ["install"],
+      "dependsOrder": "sequence",
       "problemMatcher": ["$esbuild"],
       "group": "build"
     },
