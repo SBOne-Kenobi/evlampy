@@ -206,7 +206,8 @@ button.chipx:hover {
 
 #input {
   width: 100%;
-  resize: vertical;
+  resize: none;
+  overflow-y: hidden;
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, #555);
@@ -277,15 +278,108 @@ button:disabled {
   outline-offset: 0;
 }
 
-.msg.assistant .md + .md,
-.msg.assistant .md + .suggestion,
-.msg.assistant .suggestion + .md,
-.msg.assistant .suggestion + .suggestion {
+.msg .md + .md,
+.msg .md + .suggestion,
+.msg .suggestion + .md,
+.msg .suggestion + .suggestion {
   margin-top: 8px;
+}
+
+.assistant-placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.assistant-placeholder.error {
+  color: var(--error);
+  font-style: normal;
+}
+
+.assistant-reasoning {
+  margin-bottom: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.assistant-reasoning > summary,
+.suggestion > summary,
+.suggestion-summary {
+  padding: 6px 10px;
+  user-select: none;
+}
+
+.assistant-reasoning > summary,
+.suggestion > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.assistant-reasoning > summary::-webkit-details-marker,
+.suggestion > summary::-webkit-details-marker {
+  display: none;
+}
+
+.assistant-reasoning > summary::before,
+.suggestion > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.assistant-reasoning[open] > summary::before,
+.suggestion[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.assistant-reasoning > summary {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.assistant-reasoning-body {
+  padding: 0 10px 10px;
+  color: var(--muted);
+}
+
+.reasoning-note {
+  white-space: pre-wrap;
+}
+
+.suggestion {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--vscode-editor-background);
+}
+
+.suggestion-summary,
+.suggestion > summary {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  background: var(--vscode-editor-background);
+}
+
+.suggestion-body {
+  padding: 0 10px 10px;
 }
 
 .suggestion pre {
   margin: 0;
+}
+
+.suggestion-delete {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.suggestion.failed {
+  border-color: var(--error);
+}
+
+.suggestion.partial {
+  border-color: var(--warning);
 }
 
 .suggestion.failed pre {

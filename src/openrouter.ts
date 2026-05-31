@@ -9,6 +9,8 @@ export interface ChatRequest {
   messages: ChatMsg[];
   /** Called with each streamed text delta. */
   onDelta: (text: string) => void;
+  /** Called with each streamed reasoning delta, if the provider exposes one. */
+  onReasoningDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
 
@@ -55,7 +57,13 @@ export async function chat(req: ChatRequest): Promise<ChatResponse> {
   let usage: UsageInfo | undefined;
 
   for await (const chunk of stream as any) {
-    const delta: string | undefined = chunk?.choices?.[0]?.delta?.content;
+    const choice = chunk?.choices?.[0];
+    const reasoningDelta = extractReasoningDelta(choice?.delta);
+    if (reasoningDelta) {
+      req.onReasoningDelta?.(reasoningDelta);
+    }
+
+    const delta = extractTextDelta(choice?.delta?.content);
     if (delta) {
       text += delta;
       req.onDelta(delta);
@@ -66,6 +74,47 @@ export async function chat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   return { text, usage };
+}
+
+function extractReasoningDelta(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const node = value as Record<string, unknown>;
+  const text = flattenText(node.reasoning);
+
+  return text || undefined;
+}
+
+function extractTextDelta(value: unknown): string | undefined {
+  const text = flattenText(value);
+  return text || undefined;
+}
+
+function flattenText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => flattenText(item)).join("");
+  }
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const node = value as Record<string, unknown>;
+  if (typeof node.text === "string") {
+    return node.text;
+  }
+  if (typeof node.output_text === "string") {
+    return node.output_text;
+  }
+  if (node.content !== undefined) {
+    return flattenText(node.content);
+  }
+
+  return "";
 }
 
 function toUsage(u: any): UsageInfo {

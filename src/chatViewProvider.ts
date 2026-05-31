@@ -169,11 +169,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userSystem = await loadUserSystemPrompt(cfg);
     const system = buildSystemMessage(userSystem);
 
+    const userText = buildUserMessage(text, attachments);
+
     this.pendingAttachments = [];
     this.turns.push({
       role: "user",
-      text: buildUserMessage(text, attachments),
+      text: userText,
     });
+    this.post({ type: "userMessage", text: userText });
 
     const messages: ChatMsg[] = [
       { role: "system", content: system },
@@ -198,6 +201,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         onDelta: (d) => {
           this.post({ type: "assistantDelta", text: d });
         },
+        onReasoningDelta: (d) => {
+          this.post({ type: "assistantReasoningDelta", text: d });
+        },
       });
       usage = res.usage;
       full = res.text;
@@ -212,23 +218,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.turns.push({ role: "assistant", text: full });
-    if (usage) {
-      this.totalTokens += usage.totalTokens;
-      if (usage.cost) {
-        this.totalCost += usage.cost;
+    try {
+      this.turns.push({ role: "assistant", text: full });
+      if (usage) {
+        this.totalTokens += usage.totalTokens;
+        if (usage.cost) {
+          this.totalCost += usage.cost;
+        }
       }
-    }
-    await this.saveSession();
+      await this.saveSession();
 
-    // Parse + apply diffs from the completed message.
-    const ops = parseDiffOps(full);
-    if (ops.length > 0) {
-      const report = await this.diffs.apply(ops);
-      this.post({ type: "applyReport", report });
+      // Parse + apply diffs from the completed message.
+      const ops = parseDiffOps(full);
+      if (ops.length > 0) {
+        const report = await this.diffs.apply(ops);
+        this.post({ type: "applyReport", report });
+      }
+    } catch (e) {
+      this.post({
+        type: "error",
+        message: `Post-processing failed: ${(e as Error).message}`,
+      });
+    } finally {
+      this.abort = undefined;
+      this.post({ type: "assistantDone", usage });
     }
-
-    this.post({ type: "assistantDone", usage });
   }
 
   // ---- New chat + history ----
@@ -291,7 +305,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const firstUser = this.turns.find((t) => t.role === "user");
     const session: ChatSession = {
       id: this.sessionId,
-      title: (firstUser?.text ?? "Chat").slice(0, 60),
+      title: summarizeUserTextForHistory(firstUser?.text ?? "Chat").slice(0, 60),
       turns: this.turns.map((t) => ({ ...t })),
       totalCost: this.totalCost,
       totalTokens: this.totalTokens,
@@ -631,4 +645,14 @@ function compareSuggestions(a: string, b: string, query: string): number {
   const bDir = b.endsWith("/") ? 0 : 1;
 
   return aBaseMatch - bBaseMatch || aDir - bDir || a.length - b.length || a.localeCompare(b);
+}
+
+function summarizeUserTextForHistory(text: string): string {
+  const body = text
+    .replace(/<evlampy:read\s+path="[^"]+"[^>]*>[\s\S]*?<\/evlampy:read>/g, "")
+    .replace(/^\s*---\s*$/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return body.slice(0, 40) || "Chat";
 }

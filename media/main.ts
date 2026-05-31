@@ -42,8 +42,10 @@ interface DisplayTurn {
 type ToWebview =
   | { type: "init"; models: string[]; defaultModel: string }
   | { type: "addAttachment"; attachment: Attachment }
+  | { type: "userMessage"; text: string }
   | { type: "assistantStart" }
   | { type: "assistantDelta"; text: string }
+  | { type: "assistantReasoningDelta"; text: string }
   | { type: "assistantDone"; usage?: UsageInfo }
   | { type: "fileSuggestions"; query: string; items: string[] }
   | { type: "applyReport"; report: ApplyReport }
@@ -79,9 +81,21 @@ const costEl = $("cost");
 const sendBtn = $<HTMLButtonElement>("send");
 const clearAttachmentsBtn = $<HTMLButtonElement>("clearAttachments");
 
+const INPUT_MAX_HEIGHT_RATIO = 0.25;
+
+type AssistantStatus = "waiting" | "streaming" | "done" | "error";
+
+interface AssistantView {
+  el: HTMLElement;
+  raw: string;
+  reasoning: string;
+  status: AssistantStatus;
+  report?: ApplyReport;
+}
+
 let attachments: Attachment[] = [];
 let streaming = false;
-let currentAssistant: { el: HTMLElement; raw: string } | null = null;
+let currentAssistant: AssistantView | null = null;
 let totalCost = 0;
 let totalTokens = 0;
 let availableModels: string[] = [];
@@ -186,20 +200,92 @@ function addMessage(role: "user" | "assistant" | "system", text: string): HTMLEl
   return el;
 }
 
+function createAssistantView(): AssistantView {
+  const el = document.createElement("div");
+  el.className = "msg assistant";
+  messagesEl.appendChild(el);
+
+  const view: AssistantView = {
+    el,
+    raw: "",
+    reasoning: "",
+    status: "waiting",
+  };
+
+  renderAssistantState(view, false);
+  scrollToBottom();
+  return view;
+}
+
 function renderMessage(
   el: HTMLElement,
   role: "user" | "assistant" | "system",
   text: string
 ) {
-  if (role === "user") {
-    el.textContent = text;
+  if (role === "assistant") {
+    const html = renderRichMessage(text, { collapseSuggestions: true });
+    el.innerHTML =
+      html || `<div class="assistant-placeholder">Completed with no assistant text.</div>`;
     return;
   }
-  el.innerHTML = renderRichMessage(text);
+
+  let content = text;
+  if (role === "user") {
+    // Delete "---"
+    content = content.replace(/(<\/evlampy:read>)\s*---\s*/g, "$1\n\n");
+  }
+
+  el.innerHTML = renderRichMessage(content, { collapseSuggestions: true });
+}
+
+function renderAssistantState(view: AssistantView, final: boolean) {
+  view.el.innerHTML = `${renderReasoningBlock(view)}${renderAssistantAnswer(
+    view.raw,
+    final,
+    view.status
+  )}`;
+}
+
+function renderReasoningBlock(view: AssistantView): string {
+  const reasoning = view.reasoning.trim();
+  if (!reasoning) {
+    return "";
+  }
+
+  return `<details class="assistant-reasoning"><summary>Thinking</summary><div class="assistant-reasoning-body">${renderMarkdownBlock(
+    view.reasoning
+  )}</div></details>`;
+}
+
+function renderAssistantAnswer(
+  raw: string,
+  final: boolean,
+  status: AssistantStatus
+): string {
+  const html = renderRichMessage(raw, { collapseSuggestions: final });
+  if (html) {
+    return `<div class="assistant-answer">${html}</div>`;
+  }
+  if (status === "error") {
+    return `<div class="assistant-placeholder error">Request failed before any assistant output.</div>`;
+  }
+  return "";
 }
 
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function updateInputHeight() {
+  const maxHeight = Math.max(96, Math.floor(window.innerHeight * INPUT_MAX_HEIGHT_RATIO));
+  inputEl.style.height = "auto";
+  const nextHeight = Math.min(inputEl.scrollHeight, maxHeight);
+  inputEl.style.height = `${nextHeight}px`;
+  inputEl.style.overflowY = inputEl.scrollHeight > maxHeight ? "auto" : "hidden";
+
+  if (suggestionsVisible()) {
+    layoutSuggestions();
+  }
 }
 
 function renderAttachments() {
@@ -252,10 +338,6 @@ function fmtCost(c?: number): string {
 function send() {
   const text = inputEl.value.trim();
   if (!text || streaming) return;
-  const display = attachmentsLabel() + text;
-  addMessage("user", display);
-  transcript.push({ role: "user", text: display });
-  saveState();
   vscode.postMessage({
     type: "send",
     text,
@@ -264,19 +346,9 @@ function send() {
     effort: selectedEffort,
   });
   inputEl.value = "";
+  updateInputHeight();
   attachments = [];
   renderAttachments();
-}
-
-function attachmentsLabel(): string {
-  if (attachments.length === 0) return "";
-  return (
-    attachments
-      .map((a) =>
-        a.range ? `@${a.path}:${a.range.startLine}-${a.range.endLine}` : `@${a.path}`
-      )
-      .join("  ") + "\n\n"
-  );
 }
 
 sendBtn.onclick = send;
@@ -300,9 +372,7 @@ inputEl.addEventListener("keydown", (e) => {
 
 inputEl.addEventListener("input", onInputForMention);
 window.addEventListener("resize", () => {
-  if (suggestionsVisible()) {
-    layoutSuggestions();
-  }
+  updateInputHeight();
 });
 
 // ---- @ mention autocomplete ----
@@ -312,6 +382,8 @@ let suggestionIndex = 0;
 let mentionStart = -1;
 
 function onInputForMention() {
+  updateInputHeight();
+
   const pos = inputEl.selectionStart ?? 0;
   const upto = inputEl.value.slice(0, pos);
   const m = /(^|\s)@([^\s@]*)$/.exec(upto);
@@ -409,6 +481,7 @@ function pickSuggestion(i: number) {
   const before = inputEl.value.slice(0, Math.max(0, mentionStart - 1));
   const after = inputEl.value.slice(pos);
   inputEl.value = before + after;
+  updateInputHeight();
   const caret = before.length;
   inputEl.setSelectionRange(caret, caret);
   hideSuggestions();
@@ -443,15 +516,37 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       }
       inputEl.focus();
       break;
+    case "userMessage":
+      addMessage("user", m.text);
+      transcript.push({ role: "user", text: m.text });
+      saveState();
+      break;
     case "assistantStart":
       streaming = true;
       sendBtn.disabled = true;
-      currentAssistant = { el: addMessage("assistant", ""), raw: "" };
+      currentAssistant = createAssistantView();
+      break;
+    case "assistantReasoningDelta":
+      if (currentAssistant) {
+        currentAssistant.reasoning += m.text;
+        if (currentAssistant.status === "waiting") {
+          currentAssistant.status = "streaming";
+        }
+        renderAssistantState(currentAssistant, false);
+        if (currentAssistant.report) {
+          annotateAssistantReport(currentAssistant.report, currentAssistant.el);
+        }
+        scrollToBottom();
+      }
       break;
     case "assistantDelta":
       if (currentAssistant) {
         currentAssistant.raw += m.text;
-        renderMessage(currentAssistant.el, "assistant", currentAssistant.raw);
+        currentAssistant.status = "streaming";
+        renderAssistantState(currentAssistant, false);
+        if (currentAssistant.report) {
+          annotateAssistantReport(currentAssistant.report, currentAssistant.el);
+        }
         scrollToBottom();
       }
       break;
@@ -459,7 +554,16 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       streaming = false;
       sendBtn.disabled = false;
       if (currentAssistant) {
-        transcript.push({ role: "assistant", text: currentAssistant.raw });
+        if (currentAssistant.status !== "error") {
+          currentAssistant.status = "done";
+        }
+        renderAssistantState(currentAssistant, true);
+        if (currentAssistant.report) {
+          annotateAssistantReport(currentAssistant.report, currentAssistant.el);
+        }
+        if (currentAssistant.raw.trim()) {
+          transcript.push({ role: "assistant", text: currentAssistant.raw });
+        }
         lastAssistantEl = currentAssistant.el;
       }
       currentAssistant = null;
@@ -474,7 +578,12 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       showSuggestions(m.items);
       break;
     case "applyReport":
-      annotateAssistantReport(m.report, currentAssistant?.el ?? lastAssistantEl);
+      if (currentAssistant) {
+        currentAssistant.report = m.report;
+        annotateAssistantReport(m.report, currentAssistant.el);
+      } else {
+        annotateAssistantReport(m.report, lastAssistantEl);
+      }
       renderApplyReport(m.report);
       break;
     case "clearChat":
@@ -490,12 +599,19 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       saveState();
       break;
     case "status":
-      addNotice("status", "Status", m.text);
+      addNotice("status", "Info", m.text);
       break;
     case "error":
       addNotice("error", "Error", m.message);
       streaming = false;
       sendBtn.disabled = false;
+      if (currentAssistant) {
+        currentAssistant.status = "error";
+        renderAssistantState(currentAssistant, true);
+        if (currentAssistant.report) {
+          annotateAssistantReport(currentAssistant.report, currentAssistant.el);
+        }
+      }
       break;
   }
 });
@@ -520,7 +636,7 @@ function renderApplyReport(report: ApplyReport) {
             <section class="report-item">
               <div class="report-path">${escapeHtml(it.path)}</div>
               <div class="report-detail">${escapeHtml(it.detail)}</div>
-              ${renderFailureList(it.path, it.failures ?? [])}
+              ${renderFailureList(it.failures ?? [])}
             </section>
           `
         )
@@ -548,51 +664,151 @@ function resetChat() {
   saveState();
 }
 
-function renderRichMessage(text: string): string {
-  const blockRegex =
-    /<evlampy:(edit|new|rewrite|delete)\s+path="([^"]+)"\s*>([\s\S]*?)<\/evlampy:\1>/g;
-  let html = "";
-  let lastIndex = 0;
+function renderRichMessage(
+  text: string,
+  options: { collapseSuggestions: boolean }
+): string {
+  const parts: string[] = [];
+  let cursor = 0;
   let opIndex = 0;
-  let match: RegExpExecArray | null;
 
-  while ((match = blockRegex.exec(text)) !== null) {
-    html += renderMarkdownBlock(text.slice(lastIndex, match.index));
-    const [, kind, path, body] = match;
-    html += renderSuggestionBlock(
-      kind as "edit" | "new" | "rewrite" | "delete",
-      path,
-      body,
-      opIndex
+  while (cursor < text.length) {
+    const block = findNextEvlampyBlock(text, cursor);
+    if (!block) {
+      pushRenderedMarkdown(parts, text.slice(cursor));
+      break;
+    }
+
+    pushRenderedMarkdown(parts, text.slice(cursor, block.start));
+    parts.push(
+      block.kind === "read"
+        ? renderReadBlock(block.path, block.attrs, block.body)
+        : renderSuggestionBlock(
+            block.kind,
+            block.path,
+            block.body,
+            opIndex++,
+            options.collapseSuggestions
+          )
     );
-    lastIndex = match.index + match[0].length;
-    opIndex++;
+    cursor = block.end;
   }
 
-  html += renderMarkdownBlock(text.slice(lastIndex));
-  return html;
+  return parts.length > 0 ? `<div class="md">${parts.join("")}</div>` : "";
+}
+
+function pushRenderedMarkdown(parts: string[], text: string): void {
+  const html = renderMarkdownFragment(text);
+  if (html) {
+    parts.push(html);
+  }
+}
+
+function findNextEvlampyBlock(text: string, from: number) {
+  const openRegex =
+    /<evlampy:(read|edit|new|rewrite|delete)\s+path="([^"]+)"([^>]*)>/g;
+  openRegex.lastIndex = from;
+  const open = openRegex.exec(text);
+  if (!open) {
+    return null;
+  }
+
+  const kind = open[1] as "read" | "edit" | "new" | "rewrite" | "delete";
+  const attrs = open[3];
+  const bodyStart = open.index + open[0].length;
+  const close = findEvlampyBlockClose(text, bodyStart, kind);
+  if (!close) {
+    return null;
+  }
+
+  return {
+    start: open.index,
+    end: close.end,
+    kind,
+    path: open[2],
+    attrs,
+    body: text.slice(bodyStart, close.start),
+  };
+}
+
+function findEvlampyBlockClose(
+  text: string,
+  from: number,
+  kind: "read" | "edit" | "new" | "rewrite" | "delete"
+): { start: number; end: number } | null {
+  const closeRegex = new RegExp(
+    `(^|\\n)[ \\t]*<\\/evlampy:${kind}>[ \\t]*(?=\\n|$)`,
+    "g"
+  );
+  closeRegex.lastIndex = from;
+  const match = closeRegex.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  const prefixLen = match[1]?.length ?? 0;
+  return {
+    start: match.index + prefixLen,
+    end: match.index + match[0].length,
+  };
+}
+
+function renderReadBlock(path: string, attrs: string, body: string): string {
+  const start = /start-line="(\d+)"/.exec(attrs)?.[1];
+  const end = /end-line="(\d+)"/.exec(attrs)?.[1];
+  const label = start && end ? `${path}:${start}-${end}` : path;
+
+  return `<details class="suggestion"><summary>${escapeHtml(
+    label
+  )}</summary><div class="suggestion-body">${renderCodeBlock(body)}</div></details>`;
 }
 
 function renderMarkdownBlock(text: string): string {
+  const html = renderMarkdownFragment(text);
+  return html ? `<div class="md">${html}</div>` : "";
+}
+
+function renderMarkdownFragment(text: string): string {
   const normalized = trimOuterBlankLines(text);
   if (!normalized.trim()) {
     return "";
   }
-  return `<div class="md">${marked.parse(normalized) as string}</div>`;
+  return marked.parse(normalized) as string;
 }
 
 function renderSuggestionBlock(
   kind: "edit" | "new" | "rewrite" | "delete",
   path: string,
   body: string,
-  opIndex: number
+  opIndex: number,
+  collapseSuggestions: boolean
 ): string {
-  const suggestionText = formatSuggestionText(kind, path, body);
-  return `
-    <div class="suggestion" data-op-index="${opIndex}">
-      ${marked.parse(buildFencedMarkdown(suggestionText)) as string}
-    </div>
-  `;
+  const content = renderSuggestionBody(kind, body);
+  if (collapseSuggestions) {
+    return `<details class="suggestion" data-op-index="${opIndex}"><summary>${escapeHtml(
+      path
+    )}</summary><div class="suggestion-body">${content}</div></details>`;
+  }
+
+  return `<div class="suggestion" data-op-index="${opIndex}"><div class="suggestion-summary">${escapeHtml(
+    path
+  )}</div><div class="suggestion-body">${content}</div></div>`;
+}
+
+function renderSuggestionBody(
+  kind: "edit" | "new" | "rewrite" | "delete",
+  body: string
+): string {
+  if (kind === "delete") {
+    return `<div class="suggestion-delete">(delete file)</div>`;
+  }
+
+  return renderCodeBlock(body);
+}
+
+function renderCodeBlock(text: string): string {
+  const content = trimOuterBlankLines(text);
+  return marked.parse(buildFencedMarkdown(content)) as string;
 }
 
 function annotateAssistantReport(report: ApplyReport, el: HTMLElement | null) {
@@ -616,7 +832,7 @@ function annotateAssistantReport(report: ApplyReport, el: HTMLElement | null) {
   });
 }
 
-function renderFailureList(path: string, failures: ApplyFailure[]): string {
+function renderFailureList(failures: ApplyFailure[]): string {
   if (failures.length === 0) {
     return "";
   }
@@ -627,7 +843,7 @@ function renderFailureList(path: string, failures: ApplyFailure[]): string {
         failure.hunkIndex !== undefined
           ? `Hunk ${failure.hunkIndex + 1}: ${failure.detail}`
           : failure.detail;
-      const raw = buildFailureText(path, failure);
+      const raw = buildFailureText(failure);
 
       return `
         <div class="failure-item">
@@ -654,26 +870,11 @@ function addNotice(kind: "status" | "error", title: string, text: string) {
   scrollToBottom();
 }
 
-function formatSuggestionText(
-  kind: "edit" | "new" | "rewrite" | "delete",
-  path: string,
-  body: string
-): string {
-  if (kind === "delete") {
-    return `# ${path}\n\n(delete file)`;
-  }
-
-  const content = trimOuterBlankLines(body);
-  return content ? `# ${path}\n\n${content}` : `# ${path}`;
-}
-
-function buildFailureText(path: string, failure: ApplyFailure): string {
+function buildFailureText(failure: ApplyFailure): string {
   if (failure.search === undefined && failure.replace === undefined) {
     return "";
   }
-  return `# ${path}
-
-<<<<<<< SEARCH
+  return `<<<<<<< SEARCH
 ${failure.search ?? ""}
 =======
 ${failure.replace ?? ""}
@@ -722,4 +923,5 @@ function escapeHtml(s: string): string {
 // Restore any persisted view state, then ask the extension for fresh config.
 populateEfforts();
 restoreState();
+updateInputHeight();
 vscode.postMessage({ type: "ready" });

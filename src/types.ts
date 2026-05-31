@@ -92,8 +92,10 @@ export interface ReviewFile {
 export type ToWebview =
   | { type: "init"; models: string[]; defaultModel: string }
   | { type: "addAttachment"; attachment: Attachment }
+  | { type: "userMessage"; text: string }
   | { type: "assistantStart" }
   | { type: "assistantDelta"; text: string }
+  | { type: "assistantReasoningDelta"; text: string }
   | { type: "assistantDone"; usage?: UsageInfo }
   | { type: "fileSuggestions"; query: string; items: string[] }
   | { type: "applyReport"; report: ApplyReport }
