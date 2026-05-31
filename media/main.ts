@@ -28,9 +28,16 @@ interface ApplyResultItem {
   partial?: boolean;
   failures?: ApplyFailure[];
 }
-interface ApplyReport { items: ApplyResultItem[]; appliedCount: number; failedCount: number; }
+interface ApplyReport {
+  items: ApplyResultItem[];
+  appliedCount: number;
+  failedCount: number;
+}
 
-interface DisplayTurn { role: "user" | "assistant"; text: string; }
+interface DisplayTurn {
+  role: "user" | "assistant";
+  text: string;
+}
 
 type ToWebview =
   | { type: "init"; models: string[]; defaultModel: string }
@@ -41,7 +48,12 @@ type ToWebview =
   | { type: "fileSuggestions"; query: string; items: string[] }
   | { type: "applyReport"; report: ApplyReport }
   | { type: "clearChat" }
-  | { type: "loadChat"; turns: DisplayTurn[]; totalCost: number; totalTokens: number }
+  | {
+      type: "loadChat";
+      turns: DisplayTurn[];
+      totalCost: number;
+      totalTokens: number;
+    }
   | { type: "status"; text: string }
   | { type: "error"; message: string };
 
@@ -59,11 +71,13 @@ const $ = <T extends HTMLElement>(id: string): T =>
 const messagesEl = $("messages");
 const attachmentsEl = $("attachments");
 const suggestionsEl = $("suggestions");
+const composerEl = $("composer");
 const inputEl = $<HTMLTextAreaElement>("input");
 const modelEl = $<HTMLSelectElement>("model");
 const effortEl = $<HTMLSelectElement>("effort");
 const costEl = $("cost");
 const sendBtn = $<HTMLButtonElement>("send");
+const clearAttachmentsBtn = $<HTMLButtonElement>("clearAttachments");
 
 let attachments: Attachment[] = [];
 let streaming = false;
@@ -203,11 +217,21 @@ function renderAttachments() {
     x.textContent = "×";
     x.onclick = () => {
       attachments.splice(i, 1);
+      vscode.postMessage({ type: "removeAttachment", index: i });
       renderAttachments();
+      inputEl.focus();
     };
     chip.appendChild(x);
     attachmentsEl.appendChild(chip);
   });
+  updateAttachmentActions();
+  if (suggestionsVisible()) {
+    layoutSuggestions();
+  }
+}
+
+function updateAttachmentActions() {
+  clearAttachmentsBtn.hidden = attachments.length === 0;
 }
 
 function renderCost(lastUsage?: UsageInfo) {
@@ -256,6 +280,15 @@ function attachmentsLabel(): string {
 }
 
 sendBtn.onclick = send;
+clearAttachmentsBtn.onclick = () => {
+  if (attachments.length === 0) {
+    return;
+  }
+  attachments = [];
+  vscode.postMessage({ type: "clearAttachments" });
+  renderAttachments();
+  inputEl.focus();
+};
 
 inputEl.addEventListener("keydown", (e) => {
   if (suggestionsVisible() && handleSuggestionKey(e)) return;
@@ -266,6 +299,11 @@ inputEl.addEventListener("keydown", (e) => {
 });
 
 inputEl.addEventListener("input", onInputForMention);
+window.addEventListener("resize", () => {
+  if (suggestionsVisible()) {
+    layoutSuggestions();
+  }
+});
 
 // ---- @ mention autocomplete ----
 
@@ -300,12 +338,28 @@ function showSuggestions(items: string[]) {
     row.onclick = () => pickSuggestion(i);
     suggestionsEl.appendChild(row);
   });
+  layoutSuggestions();
   suggestionsEl.classList.remove("hidden");
 }
 
 function hideSuggestions() {
   suggestionsEl.classList.add("hidden");
   suggestionItems = [];
+}
+
+function layoutSuggestions() {
+  const inputRect = inputEl.getBoundingClientRect();
+  const composerRect = composerEl.getBoundingClientRect();
+  const bottomGap = Math.max(8, window.innerHeight - composerRect.top + 6);
+  const maxHeight = Math.max(120, Math.min(320, composerRect.top - 16));
+
+  suggestionsEl.style.position = "fixed";
+  suggestionsEl.style.left = `${Math.round(inputRect.left)}px`;
+  suggestionsEl.style.right = `${Math.max(8, Math.round(window.innerWidth - inputRect.right))}px`;
+  suggestionsEl.style.bottom = `${Math.round(bottomGap)}px`;
+  suggestionsEl.style.maxHeight = `${Math.round(maxHeight)}px`;
+  suggestionsEl.style.zIndex = "1000";
+  suggestionsEl.style.overflowY = "auto";
 }
 
 function suggestionsVisible(): boolean {
@@ -489,12 +543,14 @@ function resetChat() {
   currentAssistant = null;
   streaming = false;
   sendBtn.disabled = false;
+  hideSuggestions();
   renderCost();
   saveState();
 }
 
 function renderRichMessage(text: string): string {
-  const blockRegex = /<evlampy:(edit|new|rewrite|delete)\s+path="([^"]+)"\s*>([\s\S]*?)<\/evlampy:\1>/g;
+  const blockRegex =
+    /<evlampy:(edit|new|rewrite|delete)\s+path="([^"]+)"\s*>([\s\S]*?)<\/evlampy:\1>/g;
   let html = "";
   let lastIndex = 0;
   let opIndex = 0;

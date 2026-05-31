@@ -113,8 +113,10 @@ export type FromWebview =
     }
   | { type: "requestFileSuggestions"; query: string }
   | { type: "attachByPath"; path: string }
+  | { type: "attachPaths"; paths: string[] }
   | { type: "openConfig" }
-  | { type: "removeAttachment"; index: number };
+  | { type: "removeAttachment"; index: number }
+  | { type: "clearAttachments" };
 
 export interface ApplyFailure {
   hunkIndex?: number;

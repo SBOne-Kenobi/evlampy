@@ -11,29 +11,42 @@ import {
 } from "./config";
 import { buildSystemMessage, buildUserMessage } from "./prompt";
 import { parseDiffOps } from "./parser";
- import {
-   Attachment,
-   ChatMsg,
-   ChatSession,
-   ConvTurn,
-   EffortLevel,
-   FromWebview,
-   ToWebview,
- } from "./types";
+import {
+  Attachment,
+  ChatMsg,
+  ChatSession,
+  ConvTurn,
+  EffortLevel,
+  FromWebview,
+  ToWebview,
+} from "./types";
 
 const HISTORY_KEY = "evlampy.history";
 const HISTORY_LIMIT = 5;
 const SEARCH_EXCLUDE_DIRS = [
-  ".*", "node_modules", "dist", "out", "build", "target", "bin",
-  "obj", "coverage", "pycache", "venv", "env", "vendor", "cdk.out"
+  ".*",
+  "node_modules",
+  "dist",
+  "out",
+  "build",
+  "target",
+  "bin",
+  "obj",
+  "coverage",
+  "pycache",
+  "venv",
+  "env",
+  "vendor",
+  "cdk.out",
 ];
+const MAX_ATTACH_FILES_PER_FOLDER = 100;
 
- export class ChatViewProvider implements vscode.WebviewViewProvider {
-   public static readonly viewType = "evlampy.chatView";
-   private view?: vscode.WebviewView;
-   private abort?: AbortController;
-   private configWatcher?: vscode.FileSystemWatcher;
-   private configRefreshTimer?: ReturnType<typeof setTimeout>;
+export class ChatViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = "evlampy.chatView";
+  private view?: vscode.WebviewView;
+  private abort?: AbortController;
+  private configWatcher?: vscode.FileSystemWatcher;
+  private configRefreshTimer?: ReturnType<typeof setTimeout>;
 
   // Current conversation (source of truth for what's sent to the model).
   private turns: ConvTurn[] = [];
@@ -87,17 +100,7 @@ const SEARCH_EXCLUDE_DIRS = [
     await vscode.commands.executeCommand("evlampy.chatView.focus");
     // Give the view a tick to resolve if it was hidden.
     await new Promise((r) => setTimeout(r, 50));
-    const isDup = this.pendingAttachments.some(
-      (a) =>
-        a.path === attachment.path &&
-        a.range?.startLine === attachment.range?.startLine &&
-        a.range?.endLine === attachment.range?.endLine
-    );
-    if (isDup) {
-      return;
-    }
-    this.pendingAttachments.push(attachment);
-    this.post({ type: "addAttachment", attachment });
+    this.queueAttachment(attachment);
   }
 
   private post(msg: ToWebview): void {
@@ -113,11 +116,19 @@ const SEARCH_EXCLUDE_DIRS = [
       case "requestFileSuggestions":
         return this.sendFileSuggestions(m.query);
       case "attachByPath":
-        return this.attachByPath(m.path);
+        return this.attachPaths([m.path]);
+      case "attachPaths":
+        return this.attachPaths(m.paths);
       case "openConfig":
         return void vscode.commands.executeCommand("evlampy.openConfig");
       case "removeAttachment":
-        return; // attachment state lives in the webview; nothing to do here
+        if (m.index >= 0 && m.index < this.pendingAttachments.length) {
+          this.pendingAttachments.splice(m.index, 1);
+        }
+        return;
+      case "clearAttachments":
+        this.pendingAttachments = [];
+        return;
     }
   }
 
@@ -161,14 +172,14 @@ const SEARCH_EXCLUDE_DIRS = [
     this.pendingAttachments = [];
     this.turns.push({
       role: "user",
-      text: buildUserMessage(text, attachments)
+      text: buildUserMessage(text, attachments),
     });
 
     const messages: ChatMsg[] = [
       { role: "system", content: system },
       ...this.turns.map((t) => ({
         role: t.role,
-        content: t.text
+        content: t.text,
       })),
     ];
 
@@ -294,17 +305,166 @@ const SEARCH_EXCLUDE_DIRS = [
     );
   }
 
-  /** Read a workspace file picked via @ and add it to the chat as an attachment. */
-  private async attachByPath(rel: string): Promise<void> {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
-    const abs = path.isAbsolute(rel) ? rel : path.join(root, rel);
-    try {
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(abs));
-      const content = Buffer.from(bytes).toString("utf8");
-      this.post({ type: "addAttachment", attachment: { path: rel, content } });
-    } catch {
-      this.post({ type: "error", message: `Cannot read file: ${rel}` });
+
+  private async attachPaths(inputs: string[]): Promise<void> {
+    const uniqueInputs = Array.from(
+      new Set(inputs.map((s) => s.trim()).filter(Boolean))
+    );
+
+    if (uniqueInputs.length === 0) {
+      return;
     }
+
+    let attachedFiles = 0;
+    const failed: string[] = [];
+
+    for (const input of uniqueInputs) {
+      try {
+        attachedFiles += await this.attachSingleInput(input);
+      } catch (e) {
+        failed.push(`${input}: ${(e as Error).message}`);
+      }
+    }
+
+    if (attachedFiles > 1 || uniqueInputs.length > 1) {
+      this.post({
+        type: "status",
+        text: `Attached ${attachedFiles} file(s) from ${uniqueInputs.length} item(s).`,
+      });
+    }
+
+    if (failed.length > 0) {
+      this.post({
+        type: "error",
+        message: `Some paths could not be attached: ${failed.join(" | ")}`,
+      });
+    }
+  }
+
+  private async attachSingleInput(input: string): Promise<number> {
+    const target = this.resolveAttachmentTarget(input);
+    const stat = await vscode.workspace.fs.stat(target);
+
+    if (stat.type & vscode.FileType.Directory) {
+      const files = await this.collectFilesRecursive(target, MAX_ATTACH_FILES_PER_FOLDER + 1);
+
+      if (files.length > MAX_ATTACH_FILES_PER_FOLDER) {
+        throw new Error(
+          `Folder "${this.displayPath(target)}" contains more than ${MAX_ATTACH_FILES_PER_FOLDER} files recursively. Attach a smaller folder or specific files instead.`
+        );
+      }
+      for (const file of files) {
+        const attachment = await this.readAttachment(file);
+        this.queueAttachment(attachment);
+      }
+      return files.length;
+    }
+
+    if (stat.type & vscode.FileType.File) {
+      const attachment = await this.readAttachment(target);
+      this.queueAttachment(attachment);
+      return 1;
+    }
+
+    throw new Error("Only files and folders can be attached.");
+  }
+
+  private queueAttachment(attachment: Attachment): void {
+    const isDup = this.pendingAttachments.some((a) => sameAttachment(a, attachment));
+    if (isDup) return;
+    this.pendingAttachments.push(attachment);
+    this.post({ type: "addAttachment", attachment });
+  }
+
+  private resolveAttachmentTarget(input: string): vscode.Uri {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      throw new Error("Empty path.");
+    }
+
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+      const uri = vscode.Uri.parse(trimmed);
+      if (uri.scheme !== "file") {
+        throw new Error(`Unsupported URI scheme: ${uri.scheme}`);
+      }
+      return uri;
+    }
+
+    const normalizedInput = stripTrailingSeparators(trimmed);
+    if (path.isAbsolute(normalizedInput)) {
+      return vscode.Uri.file(normalizedInput);
+    }
+
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root) {
+      throw new Error("No workspace is open.");
+    }
+
+    return vscode.Uri.file(path.join(root, normalizedInput));
+  }
+
+  private async collectFilesRecursive(
+    dir: vscode.Uri,
+    limit = Number.POSITIVE_INFINITY
+  ): Promise<vscode.Uri[]> {
+    const out: vscode.Uri[] = [];
+
+    const walk = async (current: vscode.Uri): Promise<void> => {
+      const entries = await vscode.workspace.fs.readDirectory(current);
+      entries.sort(([a], [b]) => a.localeCompare(b));
+
+      for (const [name, type] of entries) {
+        if (out.length >= limit) {
+          return;
+        }
+
+        const child = vscode.Uri.joinPath(current, name);
+        if (type & vscode.FileType.Directory) {
+          await walk(child);
+          continue;
+        }
+        if (type & vscode.FileType.File) {
+          out.push(child);
+          if (out.length >= limit) {
+            return;
+          }
+        }
+      }
+    };
+
+    await walk(dir);
+    return out;
+  }
+
+  private async readAttachment(uri: vscode.Uri): Promise<Attachment> {
+    const openDoc = vscode.workspace.textDocuments.find(
+      (doc) =>
+        doc.uri.scheme === uri.scheme &&
+        path.normalize(doc.uri.fsPath) === path.normalize(uri.fsPath)
+    );
+
+    const content = openDoc
+      ? openDoc.getText()
+      : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+
+    return {
+      path: this.displayPath(uri),
+      content,
+    };
+  }
+
+  private displayPath(uri: vscode.Uri): string {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const fsPath = uri.fsPath;
+
+    if (root) {
+      const rel = path.relative(root, fsPath);
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        return rel.replace(/\\/g, "/");
+      }
+    }
+
+    return fsPath.replace(/\\/g, "/");
   }
 
   private async sendFileSuggestions(query: string): Promise<void> {
@@ -312,19 +472,33 @@ const SEARCH_EXCLUDE_DIRS = [
     const found = await vscode.workspace.findFiles(
       "**/*",
       `**/{${SEARCH_EXCLUDE_DIRS.join(",")}}/**`,
-      2000
+      4000
     );
+
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
-    const items = found
+    const files = found
       .map((u) => path.relative(root, u.fsPath).replace(/\\/g, "/"))
+      .filter((p) => p && p.toLowerCase().includes(q));
+
+    const dirSet = new Set<string>();
+    for (const filePath of found.map((u) =>
+      path.relative(root, u.fsPath).replace(/\\/g, "/")
+    )) {
+      let current = path.posix.dirname(filePath);
+      while (current && current !== "." && !dirSet.has(current)) {
+        dirSet.add(current);
+        current = path.posix.dirname(current);
+      }
+    }
+
+    const dirs = Array.from(dirSet)
       .filter((p) => p.toLowerCase().includes(q))
-      .sort((a, b) => {
-        // Prefer matches on the basename, then shorter paths.
-        const ab = path.basename(a).toLowerCase().includes(q) ? 0 : 1;
-        const bb = path.basename(b).toLowerCase().includes(q) ? 0 : 1;
-        return ab - bb || a.length - b.length;
-      })
+      .map((p) => `${p}/`);
+
+    const items = [...dirs, ...files]
+      .sort((a, b) => compareSuggestions(a, b, q))
       .slice(0, 20);
+
     this.post({ type: "fileSuggestions", query, items });
   }
 
@@ -402,10 +576,13 @@ const SEARCH_EXCLUDE_DIRS = [
 </head>
 <body>
   <div id="messages"></div>
-  <div id="attachments"></div>
+  <div id="attachmentBar">
+    <div id="attachments"></div>
+    <button id="clearAttachments" hidden title="Remove all attachments from this draft">Clear attachments</button>
+  </div>
   <div id="suggestions" class="hidden"></div>
   <div id="composer">
-    <textarea id="input" rows="3" placeholder="Ask…  (@ to attach a file, ⌘/Ctrl+I to add the open file/selection)"></textarea>
+    <textarea id="input" rows="3" placeholder="Ask…  (@ to attach a file / entire folder, ⌘/Ctrl+I to add the open file/selection)"></textarea>
     <div id="controls">
       <div class="selectors">
         <select id="model" title="Model"></select>
@@ -431,4 +608,27 @@ function newId(): string {
 
 function getNonce(): string {
   return crypto.randomBytes(16).toString("hex");
+}
+
+function sameAttachment(a: Attachment, b: Attachment): boolean {
+  return (
+    a.path === b.path &&
+    a.range?.startLine === b.range?.startLine &&
+    a.range?.endLine === b.range?.endLine
+  );
+}
+
+function stripTrailingSeparators(input: string): string {
+  return input.length > 1 ? input.replace(/[\\/]+$/g, "") : input;
+}
+
+function compareSuggestions(a: string, b: string, query: string): number {
+  const aBase = path.posix.basename(a.replace(/\/$/, "")).toLowerCase();
+  const bBase = path.posix.basename(b.replace(/\/$/, "")).toLowerCase();
+  const aBaseMatch = aBase.includes(query) ? 0 : 1;
+  const bBaseMatch = bBase.includes(query) ? 0 : 1;
+  const aDir = a.endsWith("/") ? 0 : 1;
+  const bDir = b.endsWith("/") ? 0 : 1;
+
+  return aBaseMatch - bBaseMatch || aDir - bDir || a.length - b.length || a.localeCompare(b);
 }
