@@ -53,8 +53,8 @@ Everything else in the reply is just chat.
 - `evlampy:rewrite <path>` — full new content (only when changes are pervasive).
 - `evlampy:delete <path>` — delete a file (reject restores it).
 
-Matching is three-level: **exact → whitespace-normalized → fuzzy** (Levenshtein
-≥ 0.85). If a SEARCH is ambiguous (multiple matches) or no confident match is
+Matching is two-level: **exact → fuzzy** (Levenshtein ≥ 0.70). If a SEARCH is
+ambiguous (multiple matches), the first match is used. If no confident match is
 found, that hunk is **not applied** and is reported in the chat — there's no loop
 to recover, so you fix it by hand. Multiple hunks per file apply bottom-up and
 are order-invariant.
@@ -76,7 +76,6 @@ setting). Run **Evlampy: Open Config** to scaffold it.
   "apiKey": "${env:EVLAMPY_API_KEY}",
   "models": ["qwen/qwen3-max", "deepseek/deepseek-chat"],
   "defaultModel": "qwen/qwen3-max",
-  "provider": {},
   "reasoning": { "effort": "high" }
 }
 ```

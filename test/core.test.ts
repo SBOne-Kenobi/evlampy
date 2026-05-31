@@ -17,13 +17,13 @@ function check(name: string, cond: boolean, extra?: unknown) {
 {
   const resp = [
     "Here is the change.",
-    "```evlampy:edit src/Foo.scala",
+    "<evlampy:edit path=\"src/Foo.scala\">",
     "<<<<<<< SEARCH",
     "  val x = 1",
     "=======",
     "  val x = 2",
     ">>>>>>> REPLACE",
-    "```",
+    "</evlampy:edit>",
     "Done.",
   ].join("\n");
   const ops = parseDiffOps(resp);
@@ -41,7 +41,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
     "```python",
     "print('not an edit')",
     "```",
-    "```evlampy:edit a.ts",
+    "<evlampy:edit path=\"a.ts\">",
     "<<<<<<< SEARCH",
     "a",
     "=======",
@@ -52,7 +52,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
     "=======",
     "B",
     ">>>>>>> REPLACE",
-    "```",
+    "</evlampy:edit>",
   ].join("\n");
   const ops = parseDiffOps(resp);
   check("ignores plain fence; one edit", ops.length === 1, ops);
@@ -61,11 +61,11 @@ function check(name: string, cond: boolean, extra?: unknown) {
   }
 }
 
-// ---- parser: 3-backtick edit wrapper with inner ``` (the qwen case) ----
+// ---- parser: xml edit wrapper with inner ``` (the qwen case) ----
 {
   const resp = [
     "Updating the docs:",
-    "```evlampy:edit docs/x.md", // only 3 backticks
+    "<evlampy:edit path=\"docs/x.md\">",
     "<<<<<<< SEARCH",
     "Example:",
     "```bash",
@@ -77,7 +77,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
     "new --flag",
     "```",
     ">>>>>>> REPLACE",
-    "```",
+    "</evlampy:edit>",
     "Done.",
   ].join("\n");
   const ops = parseDiffOps(resp);
@@ -88,10 +88,10 @@ function check(name: string, cond: boolean, extra?: unknown) {
   }
 }
 
-// ---- parser: two hunks, 3-backtick wrapper, inner fences in first ----
+// ---- parser: two hunks, xml wrapper, inner fences in first ----
 {
   const resp = [
-    "```evlampy:edit a.md",
+    "<evlampy:edit path=\"a.md\">",
     "<<<<<<< SEARCH",
     "```",
     "a",
@@ -106,7 +106,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
     "=======",
     "plain B",
     ">>>>>>> REPLACE",
-    "```",
+    "</evlampy:edit>",
   ].join("\n");
   const ops = parseDiffOps(resp);
   check("two hunks despite inner fences", ops[0]?.kind === "edit" && ops[0].hunks.length === 2, ops);
@@ -115,14 +115,14 @@ function check(name: string, cond: boolean, extra?: unknown) {
 // ---- parser: new + rewrite + delete ----
 {
   const resp = [
-    "```evlampy:new src/New.ts",
+    "<evlampy:new path=\"src/New.ts\">",
     "export const x = 1;",
-    "```",
-    "```evlampy:rewrite src/Old.ts",
+    "</evlampy:new>",
+    "<evlampy:rewrite path=\"src/Old.ts\">",
     "export const y = 2;",
-    "```",
-    "```evlampy:delete src/Gone.ts",
-    "```",
+    "</evlampy:rewrite>",
+    "<evlampy:delete path=\"src/Gone.ts\">",
+    "</evlampy:delete>",
   ].join("\n");
   const ops = parseDiffOps(resp);
   check("three ops", ops.length === 3, ops.map((o) => o.kind));
@@ -140,20 +140,23 @@ function check(name: string, cond: boolean, extra?: unknown) {
   }
 }
 
-// ---- matcher: ambiguous exact -> fail ----
+// ---- matcher: ambiguous exact -> apply first match with warning flag ----
 {
   const file = "dup\nmiddle\ndup\n";
   const r = findMatch(file, "dup");
-  check("ambiguous exact fails", !r.ok, r);
+  check("ambiguous exact returns first match", r.ok && r.match.multipleMatches === true, r);
+  if (r.ok) {
+    check("first match is at start", r.match.start === 0 && r.match.end === 3);
+  }
 }
 
-// ---- matcher: normalized (search has trailing whitespace the file lacks) ----
+// ---- matcher: fuzzy (trailing whitespace mismatch falls back to fuzzy) ----
 {
   const file = "alpha\n  beta\ngamma\n"; // clean
   const r = findMatch(file, "  beta   "); // model emitted trailing spaces
-  check("normalized match ok", r.ok && r.match.level === "normalized", r);
+  check("fuzzy match for whitespace mismatch", r.ok && r.match.level === "fuzzy", r);
   if (r.ok) {
-    check("normalized span covers beta", file.slice(r.match.start, r.match.end).includes("beta"));
+    check("fuzzy span covers beta", file.slice(r.match.start, r.match.end).includes("beta"));
   }
 }
 
@@ -176,13 +179,13 @@ function check(name: string, cond: boolean, extra?: unknown) {
   const file = "header\nold body line\nfooter\n";
   const ops = parseDiffOps(
     [
-      "```evlampy:edit f.txt",
+      "<evlampy:edit path=\"f.txt\">",
       "<<<<<<< SEARCH",
       "old body line",
       "=======",
       "new body line",
       ">>>>>>> REPLACE",
-      "```",
+      "</evlampy:edit>",
     ].join("\n")
   );
   if (ops[0]?.kind === "edit") {
