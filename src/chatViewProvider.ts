@@ -654,5 +654,5 @@ function summarizeUserTextForHistory(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 
-  return body.slice(0, 40) || "Chat";
+  return body.slice(0, 80) || "Chat";
 }
