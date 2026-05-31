@@ -1,5 +1,11 @@
 :root {
   --gap: 8px;
+  --radius: 8px;
+  --border: var(--vscode-panel-border, transparent);
+  --muted: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  --code-bg: var(--vscode-textCodeBlock-background);
+  --error: var(--vscode-errorForeground, #f14c4c);
+  --warning: var(--vscode-editorWarning-foreground, #cca700);
 }
 
 * {
@@ -25,18 +31,17 @@ body {
 #messages {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: var(--gap);
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: 10px;
 }
 
 .msg {
   padding: 8px 10px;
-  border-radius: 6px;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+  border-radius: var(--radius);
   line-height: 1.45;
+  word-break: break-word;
 }
 
 .msg.user {
@@ -47,48 +52,89 @@ body {
 
 .msg.assistant {
   background: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-panel-border, transparent);
+  border: 1px solid var(--border);
 }
 
 .msg.system {
+  padding: 0;
   background: transparent;
-  opacity: 0.85;
-  font-size: 0.92em;
-  padding: 2px 10px;
+  border: none;
 }
 
-.msg.assistant pre,
-.msg.system pre {
-  background: var(--vscode-textCodeBlock-background);
-  padding: 8px;
-  border-radius: 4px;
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.msg p,
+.msg ul,
+.msg ol,
+.msg pre,
+.msg blockquote,
+.msg hr {
+  margin: 0.45em 0;
+}
+
+.msg h1,
+.msg h2,
+.msg h3,
+.msg h4,
+.msg h5,
+.msg h6 {
+  margin: 0.65em 0 0.35em;
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.msg ul,
+.msg ol {
+  padding-left: 1.25em;
+}
+
+.msg li + li {
+  margin-top: 0.15em;
+}
+
+.msg blockquote {
+  padding-left: 0.75em;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+
+.msg hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.msg pre {
+  background: var(--code-bg);
+  padding: 8px 10px;
+  border-radius: 6px;
   overflow-x: auto;
+  white-space: pre;
 }
 
 .msg code {
   font-family: var(--vscode-editor-font-family, monospace);
-  background: var(--vscode-textCodeBlock-background);
+  background: var(--code-bg);
   padding: 0 3px;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 .msg pre code {
   padding: 0;
   background: transparent;
-}
-
-.msg p:first-child {
-  margin-top: 0;
-}
-.msg p:last-child {
-  margin-bottom: 0;
+  border-radius: 0;
 }
 
 #attachments {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 0 var(--gap);
+  padding: 0 10px 6px;
 }
 
 .chip {
@@ -98,8 +144,8 @@ body {
   max-width: 100%;
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
-  border-radius: 10px;
-  padding: 2px 6px 2px 8px;
+  border-radius: 999px;
+  padding: 3px 8px;
   font-size: 0.85em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -114,15 +160,20 @@ body {
   font-size: 1.1em;
   line-height: 1;
   padding: 0 2px;
+  border-radius: 4px;
+}
+
+button.chipx:hover {
+  background: transparent;
 }
 
 #suggestions {
   max-height: 180px;
   overflow-y: auto;
-  margin: 0 var(--gap);
-  border: 1px solid var(--vscode-panel-border, #444);
+  margin: 0 10px;
+  border: 1px solid var(--border);
   background: var(--vscode-dropdown-background);
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 #suggestions.hidden {
@@ -145,11 +196,12 @@ body {
 }
 
 #composer {
-  border-top: 1px solid var(--vscode-panel-border, #333);
-  padding: var(--gap);
+  border-top: 1px solid var(--border);
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  background: var(--vscode-sideBar-background);
 }
 
 #input {
@@ -158,8 +210,8 @@ body {
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, #555);
-  border-radius: 4px;
-  padding: 6px 8px;
+  border-radius: 6px;
+  padding: 8px 10px;
   font-family: inherit;
   font-size: inherit;
 }
@@ -167,23 +219,33 @@ body {
 #controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-#model {
-  flex: 0 1 auto;
-  max-width: 45%;
+.selectors {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#model,
+#effort {
+  min-width: 0;
+  max-width: 100%;
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
   border: 1px solid var(--vscode-dropdown-border, #555);
-  border-radius: 4px;
-  padding: 3px;
+  border-radius: 6px;
+  padding: 4px 8px;
 }
 
 .cost {
   flex: 1 1 auto;
+  min-width: 140px;
   font-size: 0.8em;
-  opacity: 0.75;
+  color: var(--muted);
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -194,8 +256,8 @@ button {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
   border: none;
-  border-radius: 4px;
-  padding: 5px 12px;
+  border-radius: 6px;
+  padding: 6px 12px;
   cursor: pointer;
 }
 
@@ -208,3 +270,87 @@ button:disabled {
   cursor: default;
 }
 
+#input:focus,
+#model:focus,
+#effort:focus {
+  outline: 1px solid var(--vscode-focusBorder, transparent);
+  outline-offset: 0;
+}
+
+.msg.assistant .md + .md,
+.msg.assistant .md + .suggestion,
+.msg.assistant .suggestion + .md,
+.msg.assistant .suggestion + .suggestion {
+  margin-top: 8px;
+}
+
+.suggestion pre {
+  margin: 0;
+}
+
+.suggestion.failed pre {
+  border: 1px solid var(--error);
+}
+
+.suggestion.partial pre {
+  border: 1px solid var(--warning);
+}
+
+.notice {
+  padding: 8px 10px;
+  border-left: 3px solid var(--border);
+  background: var(--vscode-editor-background);
+  border-radius: 6px;
+}
+
+.notice.status {
+  border-left-color: var(--vscode-focusBorder, var(--border));
+}
+
+.notice.error {
+  border-left-color: var(--error);
+}
+
+.notice.warning {
+  border-left-color: var(--warning);
+}
+
+.notice-title {
+  font-weight: 600;
+}
+
+.notice-text {
+  margin-top: 4px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.report-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.report-path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+}
+
+.report-detail {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.failure-item {
+  margin-top: 8px;
+}
+
+.failure-detail {
+  margin-bottom: 6px;
+  color: var(--error);
+}
+
+.failed-suggestion pre {
+  margin: 0;
+  border: 1px solid var(--error);
+}

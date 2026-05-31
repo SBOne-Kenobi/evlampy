@@ -1,14 +1,15 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import {
-  ApplyReport,
-  ApplyResultItem,
-  DiffOp,
-  Hunk,
-  ReviewEvent,
-  ReviewFile,
-  ReviewStatus,
-} from "./types";
+ import {
+   ApplyFailure,
+   ApplyReport,
+   ApplyResultItem,
+   DiffOp,
+   Hunk,
+   ReviewEvent,
+   ReviewFile,
+   ReviewStatus,
+ } from "./types";
 import { findMatch } from "./matcher";
 import { stripPlaceholders } from "./parser";
 
@@ -65,11 +66,18 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     this.originals.clear();
 
     const report: ApplyResultItem[] = [];
-    for (const op of ops) {
+    for (let opIndex = 0; opIndex < ops.length; opIndex++) {
+      const op = ops[opIndex];
       try {
-        report.push(await this.applyOne(op));
+        report.push(await this.applyOne(op, opIndex));
       } catch (e) {
-        report.push({ path: op.path, ok: false, detail: (e as Error).message });
+        report.push({
+          path: op.path,
+          ok: false,
+          detail: (e as Error).message,
+          kind: op.kind,
+          opIndex,
+        });
       }
     }
 
@@ -95,16 +103,16 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     }));
   }
 
-  private async applyOne(op: DiffOp): Promise<ApplyResultItem> {
+  private async applyOne(op: DiffOp, opIndex: number): Promise<ApplyResultItem> {
     switch (op.kind) {
       case "new":
-        return this.applyNew(op.path, op.content);
+        return this.applyNew(op.path, op.content, opIndex);
       case "rewrite":
-        return this.applyRewrite(op.path, op.content);
+        return this.applyRewrite(op.path, op.content, opIndex);
       case "edit":
-        return this.applyEdit(op.path, op.hunks);
+        return this.applyEdit(op.path, op.hunks, opIndex);
       case "delete":
-        return this.applyDelete(op.path);
+        return this.applyDelete(op.path, opIndex);
     }
   }
 
@@ -117,50 +125,87 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     }
   }
 
-  private async applyNew(rel: string, content: string): Promise<ApplyResultItem> {
+  private async applyNew(
+    rel: string,
+    content: string,
+    opIndex: number
+  ): Promise<ApplyResultItem> {
     const uri = this.resolve(rel);
     if (await this.exists(uri)) {
-      return this.applyRewrite(rel, content);
+      return this.applyRewrite(rel, content, opIndex);
     }
     const we = new vscode.WorkspaceEdit();
     we.createFile(uri, { ignoreIfExists: true });
     we.insert(uri, new vscode.Position(0, 0), content);
     await vscode.workspace.applyEdit(we);
     this.track(rel, uri, null, false, "new file");
-    return { path: rel, ok: true, detail: "new file" };
+    return { path: rel, ok: true, detail: "new file", kind: "new", opIndex };
   }
 
-  private async applyRewrite(rel: string, content: string): Promise<ApplyResultItem> {
+  private async applyRewrite(
+    rel: string,
+    content: string,
+    opIndex: number
+  ): Promise<ApplyResultItem> {
     const uri = this.resolve(rel);
     const doc = await vscode.workspace.openTextDocument(uri);
     const original = doc.getText();
     if (content === original) {
-      return { path: rel, ok: false, detail: "no change" };
+      return {
+        path: rel,
+        ok: false,
+        detail: "no change",
+        kind: "rewrite",
+        opIndex,
+      };
     }
     await this.replaceWhole(doc, content);
     this.track(rel, uri, original, false, "rewritten");
-    return { path: rel, ok: true, detail: "rewritten" };
+    return { path: rel, ok: true, detail: "rewritten", kind: "rewrite", opIndex };
   }
 
-  private async applyEdit(rel: string, hunks: Hunk[]): Promise<ApplyResultItem> {
+  private async applyEdit(
+    rel: string,
+    hunks: Hunk[],
+    opIndex: number
+  ): Promise<ApplyResultItem> {
     const uri = this.resolve(rel);
     const doc = await vscode.workspace.openTextDocument(uri);
     const original = doc.getText();
 
-    interface Span { start: number; end: number; replace: string; }
+    interface Span {
+      start: number;
+      end: number;
+      search: string;
+      replace: string;
+      hunkIndex: number;
+    }
+
     const spans: Span[] = [];
-    const failures: string[] = [];
+    const failures: ApplyFailure[] = [];
+    let warnedAboutMultiples = false;
 
     for (let h = 0; h < hunks.length; h++) {
+      const replace = stripPlaceholders(hunks[h].replace);
       const outcome = findMatch(original, hunks[h].search);
       if (!outcome.ok) {
-        failures.push(`hunk ${h + 1}: ${outcome.reason}`);
+        failures.push({
+          hunkIndex: h,
+          detail: outcome.reason,
+          search: hunks[h].search,
+          replace,
+        });
         continue;
+      }
+      if (outcome.match.multipleMatches) {
+        warnedAboutMultiples = true;
       }
       spans.push({
         start: outcome.match.start,
         end: outcome.match.end,
-        replace: stripPlaceholders(hunks[h].replace),
+        search: hunks[h].search,
+        replace,
+        hunkIndex: h,
       });
     }
 
@@ -171,7 +216,12 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     for (const s of spans) {
       if (s.end > lastStart) {
         overlaps++;
-        failures.push("overlapping hunks; one was skipped");
+        failures.push({
+          hunkIndex: s.hunkIndex,
+          detail: "overlaps another applied hunk and was skipped",
+          search: s.search,
+          replace: s.replace,
+        });
         continue;
       }
       newText = newText.slice(0, s.start) + s.replace + newText.slice(s.end);
@@ -181,28 +231,52 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     const appliedHunks = spans.length - overlaps;
     if (newText !== original) {
       await this.replaceWhole(doc, newText);
-      const detail =
-        failures.length > 0
-          ? `${appliedHunks} hunk(s) applied, ${failures.length} failed`
-          : `${hunks.length} hunk(s) applied`;
+      let detail = `${appliedHunks} hunk(s) applied`;
+      if (warnedAboutMultiples) {
+        detail += " (⚠️ applied to 1st of multiple occurrences)";
+      }
       this.track(rel, uri, original, false, detail);
     }
 
     if (failures.length > 0) {
-      const okPart = appliedHunks > 0 ? `${appliedHunks} hunk(s) applied; ` : "";
       return {
         path: rel,
         ok: appliedHunks > 0,
-        detail: `${okPart}${failures.length} failed — ${failures.join("; ")}`,
+        detail: `Applied ${appliedHunks} hunk(s). Failed: ${failures
+          .map((f) =>
+            f.hunkIndex !== undefined
+              ? `hunk ${f.hunkIndex + 1}: ${f.detail}`
+              : f.detail
+          )
+          .join("; ")}`,
+        kind: "edit",
+        opIndex,
+        partial: appliedHunks > 0,
+        failures,
       };
     }
-    return { path: rel, ok: true, detail: `${hunks.length} hunk(s) applied` };
+
+    return {
+      path: rel,
+      ok: true,
+      detail: warnedAboutMultiples
+        ? `${hunks.length} hunk(s) applied (⚠️ applied to the first of duplicate regions)`
+        : `${hunks.length} hunk(s) applied`,
+      kind: "edit",
+      opIndex,
+    };
   }
 
-  private async applyDelete(rel: string): Promise<ApplyResultItem> {
+  private async applyDelete(rel: string, opIndex: number): Promise<ApplyResultItem> {
     const uri = this.resolve(rel);
     if (!(await this.exists(uri))) {
-      return { path: rel, ok: false, detail: "file does not exist" };
+      return {
+        path: rel,
+        ok: false,
+        detail: "file does not exist",
+        kind: "delete",
+        opIndex,
+      };
     }
     const doc = await vscode.workspace.openTextDocument(uri);
     const original = doc.getText();
@@ -210,7 +284,13 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     we.deleteFile(uri, { ignoreIfNotExists: true });
     await vscode.workspace.applyEdit(we);
     this.track(rel, uri, original, true, "deleted");
-    return { path: rel, ok: true, detail: "deleted (reject to restore)" };
+    return {
+      path: rel,
+      ok: true,
+      detail: "deleted (reject to restore)",
+      kind: "delete",
+      opIndex,
+    };
   }
 
   private track(

@@ -11,14 +11,8 @@ export interface EvlampyConfig {
   models: string[];
   /** Which of `models` is selected by default. Falls back to models[0]. */
   defaultModel?: string;
-  /** Passed straight through to OpenRouter (provider routing). */
-  provider?: Record<string, unknown>;
-  /** Passed straight through to OpenRouter (reasoning effort etc.). */
-  reasoning?: Record<string, unknown>;
-  /** Sampling temperature. */
-  temperature?: number;
-  /** Optional max_tokens. */
-  maxTokens?: number;
+  /** Service tier: "flex" (~50% discount on some models, e.g. OpenAI), "priority" or not stated (let AI provider use default). */
+  serviceTier?: string;
 }
 
 /** An attachment chip in the chat: a whole file or a selected range of one. */
@@ -39,6 +33,8 @@ export interface UsageInfo {
   cost?: number;
 }
 
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+
 /** A chat message sent to the model. */
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -48,10 +44,8 @@ export interface ChatMsg {
 /** One turn of a conversation (extension-side source of truth). */
 export interface ConvTurn {
   role: "user" | "assistant";
-  /** User: the typed prompt. Assistant: the reply text. */
+  /** User: the typed prompt and rendered attachments. Assistant: the reply text. */
   text: string;
-  /** User turns only: attachments included with this turn. */
-  attachments?: Attachment[];
 }
 
 /** A saved chat session (history). */
@@ -115,16 +109,28 @@ export type FromWebview =
       text: string;
       attachments: Attachment[];
       model: string;
+      effort: EffortLevel;
     }
   | { type: "requestFileSuggestions"; query: string }
   | { type: "attachByPath"; path: string }
   | { type: "openConfig" }
   | { type: "removeAttachment"; index: number };
 
+export interface ApplyFailure {
+  hunkIndex?: number;
+  detail: string;
+  search?: string;
+  replace?: string;
+}
+
 export interface ApplyResultItem {
   path: string;
   ok: boolean;
   detail: string;
+  kind: DiffOp["kind"];
+  opIndex: number;
+  partial?: boolean;
+  failures?: ApplyFailure[];
 }
 
 export interface ApplyReport {

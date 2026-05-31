@@ -71,14 +71,13 @@ setting). Run **Evlampy: Open Config** to scaffold it.
 
 ```json
 {
-  "userSystemPromptPath": ".evlampy/system.md",
+  "userSystemPromptPath": "AGENTS.md",
   "baseURL": "https://openrouter.ai/api/v1",
-  "apiKey": "${env:OPENROUTER_API_KEY}",
+  "apiKey": "${env:EVLAMPY_API_KEY}",
   "models": ["qwen/qwen3-max", "deepseek/deepseek-chat"],
   "defaultModel": "qwen/qwen3-max",
   "provider": {},
-  "reasoning": { "effort": "high" },
-  "temperature": 0.3
+  "reasoning": { "effort": "high" }
 }
 ```
 

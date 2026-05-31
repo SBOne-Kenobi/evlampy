@@ -1,37 +1,74 @@
+import * as crypto from "crypto";
 import * as vscode from "vscode";
 import * as path from "path";
 import { DiffManager } from "./applier";
 import { chat } from "./openrouter";
-import { loadConfig, loadUserSystemPrompt, ConfigError } from "./config";
+import {
+  configFilePath,
+  loadConfig,
+  loadUserSystemPrompt,
+  ConfigError,
+} from "./config";
 import { buildSystemMessage, buildUserMessage } from "./prompt";
 import { parseDiffOps } from "./parser";
-import {
-  Attachment,
-  ChatMsg,
-  ChatSession,
-  ConvTurn,
-  FromWebview,
-  ToWebview,
-} from "./types";
+ import {
+   Attachment,
+   ChatMsg,
+   ChatSession,
+   ConvTurn,
+   EffortLevel,
+   FromWebview,
+   ToWebview,
+ } from "./types";
 
 const HISTORY_KEY = "evlampy.history";
 const HISTORY_LIMIT = 5;
+const SEARCH_EXCLUDE_DIRS = [
+  ".*", "node_modules", "dist", "out", "build", "target", "bin",
+  "obj", "coverage", "pycache", "venv", "env", "vendor", "cdk.out"
+];
 
-export class ChatViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = "evlampy.chatView";
-  private view?: vscode.WebviewView;
-  private abort?: AbortController;
+ export class ChatViewProvider implements vscode.WebviewViewProvider {
+   public static readonly viewType = "evlampy.chatView";
+   private view?: vscode.WebviewView;
+   private abort?: AbortController;
+   private configWatcher?: vscode.FileSystemWatcher;
+   private configRefreshTimer?: ReturnType<typeof setTimeout>;
 
   // Current conversation (source of truth for what's sent to the model).
   private turns: ConvTurn[] = [];
   private sessionId = newId();
   private totalCost = 0;
   private totalTokens = 0;
+  private pendingAttachments: Attachment[] = [];
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly diffs: DiffManager
-  ) {}
+  ) {
+    this.context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("evlampy.configPath")) {
+          this.resetConfigWatcher();
+        }
+        this.scheduleConfigRefresh();
+      }),
+      vscode.workspace.onDidSaveTextDocument((doc) => {
+        if (this.isConfigFile(doc.uri)) {
+          this.scheduleConfigRefresh();
+        }
+      }),
+      {
+        dispose: () => {
+          this.configWatcher?.dispose();
+          if (this.configRefreshTimer) {
+            clearTimeout(this.configRefreshTimer);
+          }
+        },
+      }
+    );
+    this.resetConfigWatcher();
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -50,6 +87,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await vscode.commands.executeCommand("evlampy.chatView.focus");
     // Give the view a tick to resolve if it was hidden.
     await new Promise((r) => setTimeout(r, 50));
+    const isDup = this.pendingAttachments.some(
+      (a) =>
+        a.path === attachment.path &&
+        a.range?.startLine === attachment.range?.startLine &&
+        a.range?.endLine === attachment.range?.endLine
+    );
+    if (isDup) {
+      return;
+    }
+    this.pendingAttachments.push(attachment);
     this.post({ type: "addAttachment", attachment });
   }
 
@@ -62,7 +109,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "ready":
         return this.sendInit();
       case "send":
-        return this.runChat(m.text, m.attachments, m.model);
+        return this.runChat(m.text, m.attachments, m.model, m.effort);
       case "requestFileSuggestions":
         return this.sendFileSuggestions(m.query);
       case "attachByPath":
@@ -92,7 +139,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async runChat(
     text: string,
     attachments: Attachment[],
-    model: string
+    model: string,
+    effort: EffortLevel
   ): Promise<void> {
     let cfg;
     try {
@@ -110,35 +158,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userSystem = await loadUserSystemPrompt(cfg);
     const system = buildSystemMessage(userSystem);
 
-    // Record the user turn, then build the full message list from the whole chat.
-    this.turns.push({ role: "user", text, attachments });
+    this.pendingAttachments = [];
+    this.turns.push({
+      role: "user",
+      text: buildUserMessage(text, attachments)
+    });
+
     const messages: ChatMsg[] = [
       { role: "system", content: system },
-      ...this.turns.map((t) =>
-        t.role === "user"
-          ? { role: "user" as const, content: buildUserMessage(t.text, t.attachments ?? []) }
-          : { role: "assistant" as const, content: t.text }
-      ),
+      ...this.turns.map((t) => ({
+        role: t.role,
+        content: t.text
+      })),
     ];
 
     this.abort = new AbortController();
     this.post({ type: "assistantStart" });
 
-    let full = "";
+    let full;
     let usage;
     try {
       const res = await chat({
         config: cfg,
         model: model || cfg.defaultModel || cfg.models[0],
+        effort,
         messages,
         signal: this.abort.signal,
         onDelta: (d) => {
-          full += d;
           this.post({ type: "assistantDelta", text: d });
         },
       });
       usage = res.usage;
-      full = res.text || full;
+      full = res.text;
     } catch (e) {
       // Roll back the user turn so a failed request doesn't poison the context.
       this.turns.pop();
@@ -164,12 +215,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (ops.length > 0) {
       const report = await this.diffs.apply(ops);
       this.post({ type: "applyReport", report });
-      if (report.appliedCount > 0) {
-        this.post({
-          type: "status",
-          text: `${report.appliedCount} file(s) to review in the diff editor — ✓ / ✗ per file, or Accept all / Reject all in the editor toolbar.`,
-        });
-      }
     }
 
     this.post({ type: "assistantDone", usage });
@@ -183,6 +228,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sessionId = newId();
     this.totalCost = 0;
     this.totalTokens = 0;
+    this.pendingAttachments = [];
     await vscode.commands.executeCommand("evlampy.chatView.focus");
     this.post({ type: "clearChat" });
   }
@@ -265,7 +311,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const q = query.toLowerCase();
     const found = await vscode.workspace.findFiles(
       "**/*",
-      "**/{node_modules,dist,out,.git}/**",
+      `**/{${SEARCH_EXCLUDE_DIRS.join(",")}}/**`,
       2000
     );
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
@@ -280,6 +326,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       })
       .slice(0, 20);
     this.post({ type: "fileSuggestions", query, items });
+  }
+
+  private resetConfigWatcher(): void {
+    this.configWatcher?.dispose();
+    this.configWatcher = undefined;
+
+    let file: string;
+    try {
+      file = configFilePath();
+    } catch {
+      return;
+    }
+
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const normalizedFile = path.normalize(file);
+    let pattern: vscode.GlobPattern = normalizedFile.replace(/\\/g, "/");
+
+    if (root) {
+      const normalizedRoot = path.normalize(root);
+      const rel = path.relative(normalizedRoot, normalizedFile);
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        pattern = new vscode.RelativePattern(root, rel.replace(/\\/g, "/"));
+      }
+    }
+
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    const onChange = () => this.scheduleConfigRefresh();
+    watcher.onDidChange(onChange);
+    watcher.onDidCreate(onChange);
+    watcher.onDidDelete(onChange);
+    this.configWatcher = watcher;
+  }
+
+  private scheduleConfigRefresh(): void {
+    if (this.configRefreshTimer) {
+      clearTimeout(this.configRefreshTimer);
+    }
+    this.configRefreshTimer = setTimeout(() => {
+      void this.sendInit();
+    }, 150);
+  }
+
+  private isConfigFile(uri: vscode.Uri): boolean {
+    try {
+      return path.normalize(uri.fsPath) === path.normalize(configFilePath());
+    } catch {
+      return false;
+    }
   }
 
   private html(webview: vscode.Webview): string {
@@ -313,7 +407,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="composer">
     <textarea id="input" rows="3" placeholder="Ask…  (@ to attach a file, ⌘/Ctrl+I to add the open file/selection)"></textarea>
     <div id="controls">
-      <select id="model" title="Model"></select>
+      <div class="selectors">
+        <select id="model" title="Model"></select>
+        <select id="effort" title="Effort"></select>
+      </div>
       <span id="cost" class="cost"></span>
       <button id="send" title="Send (Enter)">Send</button>
     </div>
@@ -324,20 +421,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-function newId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
 function fmtCost(c: number): string {
   return "$" + (c < 0.01 ? c.toFixed(5) : c.toFixed(4));
 }
 
+function newId(): string {
+  return crypto.randomUUID();
+}
+
 function getNonce(): string {
-  let s = "";
-  const chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  for (let i = 0; i < 32; i++) {
-    s += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return s;
+  return crypto.randomBytes(16).toString("hex");
 }

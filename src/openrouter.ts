@@ -1,9 +1,10 @@
 import OpenAI from "openai";
-import { ChatMsg, EvlampyConfig, UsageInfo } from "./types";
+import { ChatMsg, EffortLevel, EvlampyConfig, UsageInfo } from "./types";
 
 export interface ChatRequest {
   config: EvlampyConfig;
   model: string;
+  effort: EffortLevel;
   /** Full message list (system first, then the conversation turns). */
   messages: ChatMsg[];
   /** Called with each streamed text delta. */
@@ -36,20 +37,14 @@ export async function chat(req: ChatRequest): Promise<ChatResponse> {
     messages: req.messages,
     stream: true,
     stream_options: { include_usage: true },
-    // Ask OpenRouter to include credit cost in usage.
     usage: { include: true },
+    temperature: 0.3,
   };
-  if (req.config.temperature !== undefined) {
-    body.temperature = req.config.temperature;
-  }
-  if (req.config.maxTokens !== undefined) {
-    body.max_tokens = req.config.maxTokens;
-  }
-  if (req.config.provider && Object.keys(req.config.provider).length > 0) {
-    body.provider = req.config.provider;
-  }
-  if (req.config.reasoning && Object.keys(req.config.reasoning).length > 0) {
-    body.reasoning = req.config.reasoning;
+  body.reasoning = { effort: req.effort };
+  // service_tier: "flex" gives ~50% discount on some models (e.g. OpenAI) at the cost of higher latency.
+  // Only send if explicitly configured; otherwise let OpenRouter use its default.
+  if (req.config.serviceTier) {
+    body.service_tier = req.config.serviceTier;
   }
 
   const stream = await client.chat.completions.create(body as any, {

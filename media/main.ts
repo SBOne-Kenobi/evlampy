@@ -12,7 +12,22 @@ interface UsageInfo {
   totalTokens: number;
   cost?: number;
 }
-interface ApplyResultItem { path: string; ok: boolean; detail: string; }
+type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+interface ApplyFailure {
+  hunkIndex?: number;
+  detail: string;
+  search?: string;
+  replace?: string;
+}
+interface ApplyResultItem {
+  path: string;
+  ok: boolean;
+  detail: string;
+  kind: "edit" | "new" | "rewrite" | "delete";
+  opIndex: number;
+  partial?: boolean;
+  failures?: ApplyFailure[];
+}
 interface ApplyReport { items: ApplyResultItem[]; appliedCount: number; failedCount: number; }
 
 interface DisplayTurn { role: "user" | "assistant"; text: string; }
@@ -46,6 +61,7 @@ const attachmentsEl = $("attachments");
 const suggestionsEl = $("suggestions");
 const inputEl = $<HTMLTextAreaElement>("input");
 const modelEl = $<HTMLSelectElement>("model");
+const effortEl = $<HTMLSelectElement>("effort");
 const costEl = $("cost");
 const sendBtn = $<HTMLButtonElement>("send");
 
@@ -56,7 +72,9 @@ let totalCost = 0;
 let totalTokens = 0;
 let availableModels: string[] = [];
 let selectedModel = "";
+let selectedEffort: EffortLevel = "high";
 let transcript: DisplayTurn[] = [];
+let lastAssistantEl: HTMLElement | null = null;
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -65,6 +83,7 @@ marked.setOptions({ gfm: true, breaks: false });
 interface SavedState {
   availableModels: string[];
   selectedModel: string;
+  selectedEffort: EffortLevel;
   transcript: DisplayTurn[];
   totalCost: number;
   totalTokens: number;
@@ -74,6 +93,7 @@ function saveState() {
   vscode.setState({
     availableModels,
     selectedModel,
+    selectedEffort,
     transcript,
     totalCost,
     totalTokens,
@@ -87,10 +107,12 @@ function restoreState() {
   }
   availableModels = s.availableModels ?? [];
   selectedModel = s.selectedModel ?? "";
+  selectedEffort = s.selectedEffort ?? "high";
   transcript = s.transcript ?? [];
   totalCost = s.totalCost ?? 0;
   totalTokens = s.totalTokens ?? 0;
   populateModels();
+  populateEfforts();
   transcript.forEach((t) => addMessage(t.role, t.text));
   renderCost();
 }
@@ -103,13 +125,39 @@ function populateModels() {
     o.textContent = mod;
     modelEl.appendChild(o);
   });
-  if (selectedModel && availableModels.includes(selectedModel)) {
-    modelEl.value = selectedModel;
+
+  if (availableModels.length === 0) {
+    selectedModel = "";
+    modelEl.disabled = true;
+    return;
   }
+
+  modelEl.disabled = false;
+  if (!selectedModel || !availableModels.includes(selectedModel)) {
+    selectedModel = availableModels[0];
+  }
+  modelEl.value = selectedModel;
+}
+
+function populateEfforts() {
+  const efforts: EffortLevel[] = ["none", "low", "medium", "high", "xhigh", "max"];
+  effortEl.innerHTML = "";
+  efforts.forEach((effort) => {
+    const o = document.createElement("option");
+    o.value = effort;
+    o.textContent = `effort: ${effort}`;
+    effortEl.appendChild(o);
+  });
+  effortEl.value = selectedEffort;
 }
 
 modelEl.addEventListener("change", () => {
   selectedModel = modelEl.value;
+  saveState();
+});
+
+effortEl.addEventListener("change", () => {
+  selectedEffort = effortEl.value as EffortLevel;
   saveState();
 });
 
@@ -118,14 +166,22 @@ modelEl.addEventListener("change", () => {
 function addMessage(role: "user" | "assistant" | "system", text: string): HTMLElement {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
-  if (role === "user") {
-    el.textContent = text;
-  } else {
-    el.innerHTML = marked.parse(text) as string;
-  }
+  renderMessage(el, role, text);
   messagesEl.appendChild(el);
   scrollToBottom();
   return el;
+}
+
+function renderMessage(
+  el: HTMLElement,
+  role: "user" | "assistant" | "system",
+  text: string
+) {
+  if (role === "user") {
+    el.textContent = text;
+    return;
+  }
+  el.innerHTML = renderRichMessage(text);
 }
 
 function scrollToBottom() {
@@ -181,6 +237,7 @@ function send() {
     text,
     attachments,
     model: modelEl.value,
+    effort: selectedEffort,
   });
   inputEl.value = "";
   attachments = [];
@@ -294,7 +351,6 @@ function pickSuggestion(i: number) {
     hideSuggestions();
     return;
   }
-  // Drop the typed "@partial" (the "@" sits just before mentionStart) ...
   const pos = inputEl.selectionStart ?? 0;
   const before = inputEl.value.slice(0, Math.max(0, mentionStart - 1));
   const after = inputEl.value.slice(pos);
@@ -303,7 +359,6 @@ function pickSuggestion(i: number) {
   inputEl.setSelectionRange(caret, caret);
   hideSuggestions();
   inputEl.focus();
-  // ... and attach the actual file content as a chip.
   vscode.postMessage({ type: "attachByPath", path: pick });
 }
 
@@ -313,15 +368,17 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
   const m = ev.data;
   switch (m.type) {
     case "init": {
-      // Don't wipe a working dropdown if a re-init arrives with no models.
-      if (m.models.length > 0) {
-        availableModels = m.models;
+      availableModels = m.models;
+      if (availableModels.length > 0) {
         if (!selectedModel || !availableModels.includes(selectedModel)) {
           selectedModel = m.defaultModel || availableModels[0];
         }
-        populateModels();
-        saveState();
+      } else {
+        selectedModel = "";
       }
+      populateModels();
+      populateEfforts();
+      saveState();
       renderCost();
       break;
     }
@@ -340,7 +397,7 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
     case "assistantDelta":
       if (currentAssistant) {
         currentAssistant.raw += m.text;
-        currentAssistant.el.innerHTML = marked.parse(currentAssistant.raw) as string;
+        renderMessage(currentAssistant.el, "assistant", currentAssistant.raw);
         scrollToBottom();
       }
       break;
@@ -349,6 +406,7 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       sendBtn.disabled = false;
       if (currentAssistant) {
         transcript.push({ role: "assistant", text: currentAssistant.raw });
+        lastAssistantEl = currentAssistant.el;
       }
       currentAssistant = null;
       if (m.usage) {
@@ -362,6 +420,7 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       showSuggestions(m.items);
       break;
     case "applyReport":
+      annotateAssistantReport(m.report, currentAssistant?.el ?? lastAssistantEl);
       renderApplyReport(m.report);
       break;
     case "clearChat":
@@ -377,10 +436,10 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       saveState();
       break;
     case "status":
-      addMessage("system", `_${m.text}_`);
+      addNotice("status", "Status", m.text);
       break;
     case "error":
-      addMessage("system", `**Error:** ${escapeHtml(m.message)}`);
+      addNotice("error", "Error", m.message);
       streaming = false;
       sendBtn.disabled = false;
       break;
@@ -388,21 +447,41 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
 });
 
 function renderApplyReport(report: ApplyReport) {
-  // Only surface problems here; successful files live in the review list.
-  const failed = report.items.filter((it) => !it.ok);
-  if (failed.length === 0) {
+  const issues = report.items.filter(
+    (it) => !it.ok || it.partial || (it.failures?.length ?? 0) > 0
+  );
+  if (issues.length === 0) {
     return;
   }
-  const lines = failed
-    .map((it) => `⚠️ \`${it.path}\` — ${it.detail}`)
-    .join("\n");
-  addMessage("system", `**${failed.length} change(s) not applied**\n\n${lines}`);
+
+  const el = document.createElement("div");
+  el.className = "msg system";
+  el.innerHTML = `
+    <div class="notice warning">
+      <div class="notice-title">Manual review needed</div>
+      <div class="notice-text">${issues.length} change block(s) were not fully applied.</div>
+      ${issues
+        .map(
+          (it) => `
+            <section class="report-item">
+              <div class="report-path">${escapeHtml(it.path)}</div>
+              <div class="report-detail">${escapeHtml(it.detail)}</div>
+              ${renderFailureList(it.path, it.failures ?? [])}
+            </section>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+  messagesEl.appendChild(el);
+  scrollToBottom();
 }
 
 /** Wipe the visible chat (keeps the model list/selection). */
 function resetChat() {
   messagesEl.innerHTML = "";
   attachments = [];
+  lastAssistantEl = null;
   renderAttachments();
   transcript = [];
   totalCost = 0;
@@ -412,6 +491,164 @@ function resetChat() {
   sendBtn.disabled = false;
   renderCost();
   saveState();
+}
+
+function renderRichMessage(text: string): string {
+  const blockRegex = /<evlampy:(edit|new|rewrite|delete)\s+path="([^"]+)"\s*>([\s\S]*?)<\/evlampy:\1>/g;
+  let html = "";
+  let lastIndex = 0;
+  let opIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = blockRegex.exec(text)) !== null) {
+    html += renderMarkdownBlock(text.slice(lastIndex, match.index));
+    const [, kind, path, body] = match;
+    html += renderSuggestionBlock(
+      kind as "edit" | "new" | "rewrite" | "delete",
+      path,
+      body,
+      opIndex
+    );
+    lastIndex = match.index + match[0].length;
+    opIndex++;
+  }
+
+  html += renderMarkdownBlock(text.slice(lastIndex));
+  return html;
+}
+
+function renderMarkdownBlock(text: string): string {
+  const normalized = trimOuterBlankLines(text);
+  if (!normalized.trim()) {
+    return "";
+  }
+  return `<div class="md">${marked.parse(normalized) as string}</div>`;
+}
+
+function renderSuggestionBlock(
+  kind: "edit" | "new" | "rewrite" | "delete",
+  path: string,
+  body: string,
+  opIndex: number
+): string {
+  const suggestionText = formatSuggestionText(kind, path, body);
+  return `
+    <div class="suggestion" data-op-index="${opIndex}">
+      ${marked.parse(buildFencedMarkdown(suggestionText)) as string}
+    </div>
+  `;
+}
+
+function annotateAssistantReport(report: ApplyReport, el: HTMLElement | null) {
+  if (!el) {
+    return;
+  }
+
+  report.items.forEach((item) => {
+    const block = el.querySelector<HTMLElement>(`.suggestion[data-op-index="${item.opIndex}"]`);
+    if (!block) {
+      return;
+    }
+
+    block.classList.remove("failed", "partial");
+    if (!item.ok) {
+      block.classList.add("failed");
+    } else if (item.partial || (item.failures?.length ?? 0) > 0) {
+      block.classList.add("partial");
+    }
+    block.title = item.detail;
+  });
+}
+
+function renderFailureList(path: string, failures: ApplyFailure[]): string {
+  if (failures.length === 0) {
+    return "";
+  }
+
+  return failures
+    .map((failure) => {
+      const detail =
+        failure.hunkIndex !== undefined
+          ? `Hunk ${failure.hunkIndex + 1}: ${failure.detail}`
+          : failure.detail;
+      const raw = buildFailureText(path, failure);
+
+      return `
+        <div class="failure-item">
+          <div class="failure-detail">${escapeHtml(detail)}</div>
+          ${raw
+            ? `<div class="failed-suggestion">${marked.parse(buildFencedMarkdown(raw)) as string}</div>`
+            : ""}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function addNotice(kind: "status" | "error", title: string, text: string) {
+  const el = document.createElement("div");
+  el.className = "msg system";
+  el.innerHTML = `
+    <div class="notice ${kind}">
+      <div class="notice-title">${escapeHtml(title)}</div>
+      <div class="notice-text">${escapeHtml(text)}</div>
+    </div>
+  `;
+  messagesEl.appendChild(el);
+  scrollToBottom();
+}
+
+function formatSuggestionText(
+  kind: "edit" | "new" | "rewrite" | "delete",
+  path: string,
+  body: string
+): string {
+  if (kind === "delete") {
+    return `# ${path}\n\n(delete file)`;
+  }
+
+  const content = trimOuterBlankLines(body);
+  return content ? `# ${path}\n\n${content}` : `# ${path}`;
+}
+
+function buildFailureText(path: string, failure: ApplyFailure): string {
+  if (failure.search === undefined && failure.replace === undefined) {
+    return "";
+  }
+  return `# ${path}
+
+<<<<<<< SEARCH
+${failure.search ?? ""}
+=======
+${failure.replace ?? ""}
+>>>>>>> REPLACE`;
+}
+
+function buildFencedMarkdown(text: string): string {
+  const fence = "`".repeat(Math.max(3, longestBacktickRun(text) + 1));
+  return `${fence}
+${text}
+${fence}`;
+}
+
+function longestBacktickRun(text: string): number {
+  let best = 0;
+  let run = 0;
+  for (const ch of text) {
+    if (ch === "`") {
+      run++;
+      if (run > best) {
+        best = run;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  return best;
+}
+
+function trimOuterBlankLines(text: string): string {
+  return text.replace(/^\n+|\n+$/g, "");
 }
 
 function sameAttachment(a: Attachment, b: Attachment): boolean {
@@ -427,5 +664,6 @@ function escapeHtml(s: string): string {
 }
 
 // Restore any persisted view state, then ask the extension for fresh config.
+populateEfforts();
 restoreState();
 vscode.postMessage({ type: "ready" });

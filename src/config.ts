@@ -4,7 +4,7 @@ import { EvlampyConfig } from "./types";
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 
-export class ConfigError extends Error {}
+export class ConfigError extends Error { }
 
 /** Resolve ${env:VAR} references inside a string. */
 function interpolateEnv(value: string): string {
@@ -37,15 +37,15 @@ export async function loadConfig(): Promise<EvlampyConfig> {
   const file = configFilePath();
   const uri = vscode.Uri.file(file);
 
-  let raw: string;
   try {
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    raw = Buffer.from(bytes).toString("utf8");
+    await vscode.workspace.fs.stat(uri);
   } catch {
-    throw new ConfigError(
-      `Config not found at ${file}. Run "Evlampy: Open Config" to create one.`
-    );
+    // Creating a config file if it doesn't exist
+    await ensureConfigScaffold(false);
   }
+
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  const raw = Buffer.from(bytes).toString("utf8");
 
   let parsed: Partial<EvlampyConfig>;
   try {
@@ -56,9 +56,7 @@ export async function loadConfig(): Promise<EvlampyConfig> {
 
   const apiKey = interpolateEnv(parsed.apiKey ?? "").trim();
   if (!apiKey) {
-    throw new ConfigError(
-      'Config is missing "apiKey" (or the referenced env var is empty).'
-    );
+    throw new ConfigError('Config is missing "apiKey" (or the referenced env var is empty).');
   }
   const models = parsed.models ?? [];
   if (!Array.isArray(models) || models.length === 0) {
@@ -70,30 +68,19 @@ export async function loadConfig(): Promise<EvlampyConfig> {
     baseURL: parsed.baseURL?.trim() || DEFAULT_BASE_URL,
     apiKey,
     models,
-    defaultModel:
-      parsed.defaultModel && models.includes(parsed.defaultModel)
-        ? parsed.defaultModel
-        : models[0],
-    provider: parsed.provider,
-    reasoning: parsed.reasoning,
-    temperature: parsed.temperature,
-    maxTokens: parsed.maxTokens,
+    defaultModel: parsed.defaultModel || models[0],
+    serviceTier: parsed.serviceTier,
   };
 }
 
 /** Read the user system prompt file, or "" if none/unreadable. */
-export async function loadUserSystemPrompt(
-  cfg: EvlampyConfig
-): Promise<string> {
-  if (!cfg.userSystemPromptPath) {
+export async function loadUserSystemPrompt(cfg: EvlampyConfig): Promise<string> {
+  const root = workspaceRoot();
+  if (!root || !cfg.userSystemPromptPath) {
     return "";
   }
   let file = cfg.userSystemPromptPath;
   if (!path.isAbsolute(file)) {
-    const root = workspaceRoot();
-    if (!root) {
-      return "";
-    }
     file = path.join(root, file);
   }
   try {
@@ -105,39 +92,29 @@ export async function loadUserSystemPrompt(
 }
 
 const SAMPLE_CONFIG = `{
-  "userSystemPromptPath": ".evlampy/system.md",
+  "userSystemPromptPath": "AGENTS.md",
   "baseURL": "https://openrouter.ai/api/v1",
-  "apiKey": "\${env:OPENROUTER_API_KEY}",
+  "apiKey": "\${env:EVLAMPY_API_KEY}",
   "models": ["qwen/qwen3-coder-flash"],
   "defaultModel": "qwen/qwen3-coder-flash",
-  "provider": {},
-  "reasoning": { "effort": "high" },
-  "temperature": 0.3
+  "serviceTier": "flex"
 }
 `;
 
-const SAMPLE_SYSTEM = `# Your project rules go here.
-# This text is appended after Evlampy's minimal format prompt.
-`;
-
-/** Create a starter config + system prompt if they don't exist, then open the config. */
-export async function ensureConfigScaffold(): Promise<void> {
+/** Create a starter config if it doest't exist. Open the config if needed. */
+export async function ensureConfigScaffold(openConfig = true): Promise<void> {
   const file = configFilePath();
   const uri = vscode.Uri.file(file);
   try {
     await vscode.workspace.fs.stat(uri);
   } catch {
+    // Create .evlampy directory, if there is none
+    const dir = path.dirname(file);
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(dir));
     await vscode.workspace.fs.writeFile(uri, Buffer.from(SAMPLE_CONFIG, "utf8"));
-    const sysUri = vscode.Uri.file(path.join(path.dirname(file), "system.md"));
-    try {
-      await vscode.workspace.fs.stat(sysUri);
-    } catch {
-      await vscode.workspace.fs.writeFile(
-        sysUri,
-        Buffer.from(SAMPLE_SYSTEM, "utf8")
-      );
-    }
   }
-  const doc = await vscode.workspace.openTextDocument(uri);
-  await vscode.window.showTextDocument(doc);
+  if (openConfig) {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc);
+  }
 }
